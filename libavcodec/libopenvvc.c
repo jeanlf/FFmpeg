@@ -84,26 +84,7 @@ static void convert_frame(AVFrame *avframe, const OVFrame *ovframe) {
 
     avframe->buf[0] = av_buffer_create(ovframe, sizeof(ovframe),
                                        ovvc_unref, NULL, 0);
-                                       #if 0
-    avframe->buf[1] = av_buffer_create(ovframe, sizeof(ovframe),
-                                       dummy_unref, NULL, 0);
-    avframe->buf[2] = av_buffer_create(ovframe, sizeof(ovframe),
-                                       dummy_unref, NULL, 0);
 
-    avframe->buf[3] = av_buffer_create(ovframe, sizeof(ovframe),
-                                       dummy_unref, NULL, 0);
-    avframe->buf[4] = av_buffer_create(ovframe, sizeof(ovframe),
-                                       dummy_unref, NULL, 0);
-    avframe->buf[5] = av_buffer_create(ovframe, sizeof(ovframe),
-                                       dummy_unref, NULL, 0);
-    avframe->buf[6] = av_buffer_create(ovframe, sizeof(ovframe),
-                                       dummy_unref, NULL, 0);
-    avframe->buf[7] = av_buffer_create(ovframe, sizeof(ovframe),
-                                       dummy_unref, NULL, 0);
-                                       #endif
-    #if 0
-    avframe->poc = ovframe->poc;
-    #endif
     avframe->pict_type = AV_PIX_FMT_YUV420P10;
 
 }
@@ -287,13 +268,13 @@ static int libovvc_decode_frame(AVCodecContext *c, void *outdata, int *outdata_s
     }
 
     convert_avpkt(&ovpu, &pkt);
+
     ret = ovdec_submit_picture_unit(libovvc_dec, &ovpu);
     if (ret < 0) {
         av_free(ovpu.nalus);
         return AVERROR_INVALIDDATA;
     }
 
-    #if 1
     ovdec_receive_picture(libovvc_dec, &ovframe);
 
     /* FIXME use ret instead of frame */
@@ -309,13 +290,6 @@ static int libovvc_decode_frame(AVCodecContext *c, void *outdata, int *outdata_s
 
         *nb_pic_out = 1;
     }
-    #else
-        c->pix_fmt = AV_PIX_FMT_YUV420P10;
-        c->width   = 3840;
-        c->height  = 2160;
-        c->coded_width   = 3840;
-        c->coded_height  = 2160;
-    #endif
 
     av_free(ovpu.nalus);
     return 0;
