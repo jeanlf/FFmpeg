@@ -40,37 +40,83 @@ struct OVDecContext{
      OVVCDec* libovvc_dec;
      int nal_length_size;
      int is_nalff;
+     int64_t log_level;
+     int64_t nb_entry_th;
+     int64_t nb_frame_th;
+     uint8_t *last_extradata;
 };
+
+static int copy_rpbs_info(OVNALUnit **ovnalu_p, const uint8_t *rbsp_buffer, int raw_size, const int *skipped_bytes_pos, int skipped_bytes) {
+
+    uint8_t *rbsp_cpy = av_malloc(raw_size + 8);
+    OVNALUnit *ovnalu = av_mallocz(sizeof(OVNALUnit));
+    if (!ovnalu) {
+        return AVERROR(ENOMEM);
+    }
+    ov_nalu_init(ovnalu);
+
+    /* TODO check allocs */
+    memcpy(rbsp_cpy, rbsp_buffer, raw_size);
+    rbsp_cpy[raw_size]     = 0;
+    rbsp_cpy[raw_size + 1] = 0;
+    rbsp_cpy[raw_size + 2] = 0;
+    rbsp_cpy[raw_size + 3] = 0;
+    rbsp_cpy[raw_size + 4] = 0;
+    rbsp_cpy[raw_size + 5] = 0;
+    rbsp_cpy[raw_size + 6] = 0;
+    rbsp_cpy[raw_size + 7] = 0;
+
+    ovnalu->rbsp_data = rbsp_cpy;
+    ovnalu->rbsp_size = raw_size;
+
+    if (skipped_bytes) {
+        int *epb_cpy = av_malloc(skipped_bytes * sizeof (*ovnalu->epb_pos));
+        memcpy(epb_cpy, skipped_bytes_pos, skipped_bytes * sizeof (*ovnalu->epb_pos));
+
+        ovnalu->epb_pos = epb_cpy;
+        ovnalu->nb_epb = skipped_bytes;
+    }
+
+    *ovnalu_p = ovnalu;
+
+    return 0;
+}
 
 static int convert_avpkt(OVPictureUnit *ovpu, const H2645Packet *pkt) {
     int i;
     ovpu->nb_nalus = pkt->nb_nals;
     ovpu->nalus = av_malloc(sizeof(*ovpu->nalus) * ovpu->nb_nalus);
     if (!ovpu->nb_nalus) {
+        av_log(NULL, AV_LOG_ERROR, "No NAL Unit in packet.\n");
         return AVERROR(ENOMEM);
     }
 
     for (i = 0; i < ovpu->nb_nalus; ++i) {
          const H2645NAL *avnalu = &pkt->nals[i];
-         OVNALUnit *ovnalu = &ovpu->nalus[i];
-         ovnalu->rbsp_data = avnalu->rbsp_buffer;
-         ovnalu->rbsp_size = avnalu->raw_size;
-         ovnalu->epb_pos   = avnalu->skipped_bytes_pos;
-         ovnalu->nb_epb    = avnalu->skipped_bytes;
-         ovnalu->type = avnalu->type;
+         OVNALUnit **ovnalu_p = &ovpu->nalus[i];
+         copy_rpbs_info(ovnalu_p, avnalu->rbsp_buffer, avnalu->raw_size, avnalu->skipped_bytes_pos, avnalu->skipped_bytes);
+         (*ovnalu_p)->type = avnalu->type;
+    }
+
+    return 0;
+}
+
+static int unref_ovvc_nalus(OVPictureUnit *ovpu) {
+    int i;
+    for (i = 0; i < ovpu->nb_nalus; ++i) {
+         OVNALUnit **ovnalu_p = &ovpu->nalus[i];
+         ov_nalu_unref(ovnalu_p);
     }
     return 0;
 }
 
-static void dummy_unref(void *opaque, uint8_t *data){
+static void ovvc_unref_ovframe(void *opaque, uint8_t *data) {
+
+    OVFrame **frame_p = (OVFrame **)&data;
+    ovframe_unref(frame_p);
 }
 
-static void ovvc_unref(void *opaque, uint8_t *data) {
-
-    ovframe_unref(&data);
-}
-
-static void convert_frame(AVFrame *avframe, const OVFrame *ovframe) {
+static void convert_ovframe(AVFrame *avframe, const OVFrame *ovframe) {
     avframe->data[0] = ovframe->data[0];
     avframe->data[1] = ovframe->data[1];
     avframe->data[2] = ovframe->data[2];
@@ -83,35 +129,14 @@ static void convert_frame(AVFrame *avframe, const OVFrame *ovframe) {
     avframe->height = ovframe->height[0];
 
     avframe->buf[0] = av_buffer_create(ovframe, sizeof(ovframe),
-                                       ovvc_unref, NULL, 0);
-                                       #if 0
-    avframe->buf[1] = av_buffer_create(ovframe, sizeof(ovframe),
-                                       dummy_unref, NULL, 0);
-    avframe->buf[2] = av_buffer_create(ovframe, sizeof(ovframe),
-                                       dummy_unref, NULL, 0);
+                                       ovvc_unref_ovframe, NULL, 0);
 
-    avframe->buf[3] = av_buffer_create(ovframe, sizeof(ovframe),
-                                       dummy_unref, NULL, 0);
-    avframe->buf[4] = av_buffer_create(ovframe, sizeof(ovframe),
-                                       dummy_unref, NULL, 0);
-    avframe->buf[5] = av_buffer_create(ovframe, sizeof(ovframe),
-                                       dummy_unref, NULL, 0);
-    avframe->buf[6] = av_buffer_create(ovframe, sizeof(ovframe),
-                                       dummy_unref, NULL, 0);
-    avframe->buf[7] = av_buffer_create(ovframe, sizeof(ovframe),
-                                       dummy_unref, NULL, 0);
-                                       #endif
-    #if 0
-    avframe->poc = ovframe->poc;
-    #endif
     avframe->pict_type = AV_PIX_FMT_YUV420P10;
-
 }
 
 static int ff_vvc_decode_extradata(const uint8_t *data, int size, OVVCDec *dec,
                                    int *is_nalff, int *nal_length_size,
-                                   void *logctx)
-{
+                                   void *logctx) {
     int i, j, num_arrays, nal_len_size, b, has_ptl, num_sublayers;
     int ret = 0;
     GetByteContext gb;
@@ -123,9 +148,9 @@ static int ff_vvc_decode_extradata(const uint8_t *data, int size, OVVCDec *dec,
      * is finalized. When finalized, configurationVersion will be 1 and we
      * can recognize hvcC by checking if avctx->extradata[0]==1 or not. */
 
+    av_log(logctx, AV_LOG_WARNING, "Extra data support is experimental in openVVC.\n");
+
     *is_nalff = 1;
-
-
 
     b = bytestream2_get_byte(&gb);
 
@@ -204,15 +229,13 @@ static int ff_vvc_decode_extradata(const uint8_t *data, int size, OVVCDec *dec,
         else
             cnt = 1;
 
-        av_log(logctx, AV_LOG_DEBUG,
-            "nalu_type %d cnt %d\n", type, cnt);
+        av_log(logctx, AV_LOG_DEBUG, "nalu_type %d cnt %d\n", type, cnt);
 
         for (j = 0; j < cnt; j++) {
             // +2 for the nal size field
 
             int nalsize = bytestream2_peek_be16(&gb) + 2;
-            av_log(logctx, AV_LOG_DEBUG,
-               "nalsize %d \n", nalsize);
+            av_log(logctx, AV_LOG_DEBUG, "nalsize %d \n", nalsize);
 
 
             OVPictureUnit ovpu= {0};
@@ -224,39 +247,30 @@ static int ff_vvc_decode_extradata(const uint8_t *data, int size, OVVCDec *dec,
             }
 
             /* FIMXE unrequired malloc */
-            ovpu.nalus = av_mallocz(sizeof(OVNALUnit));
-            OVNALUnit *ovnalu = &ovpu.nalus[0];
-            ovnalu->rbsp_data = gb.buffer;
-            ovnalu->rbsp_size = nalsize;
-            {int k; uint8_t *p_data = gb.buffer; 
-                for (k=0; k<nalsize; k++)
-                av_log(logctx, AV_LOG_DEBUG,
-                    "%02x ", p_data[k]);
-            }
-        
-            av_log(logctx, AV_LOG_DEBUG,
-                "\n");
+            ovpu.nalus = av_mallocz(sizeof(OVNALUnit*));
+
+            OVNALUnit **ovnalu_p = &ovpu.nalus[0];
+
+            copy_rpbs_info(ovnalu_p, gb.buffer + 2, nalsize, NULL, 0);
+
+            (*ovnalu_p)->type = type;
 
             ret = ovdec_submit_picture_unit(dec, &ovpu);
 
+            unref_ovvc_nalus(&ovpu);
             av_free(ovpu.nalus);
-#if 0
-            ret = vvc_decode_nal_units(gb.buffer, nalsize, ps, sei, *is_nalff,
-                                       *nal_length_size, err_recognition,
-                                       logctx);
-#endif
+
             if (ret < 0) {
-                av_log(logctx, AV_LOG_ERROR,
-                       "Decoding nal unit %d %d from hvcC failed\n",
+                av_log(logctx, AV_LOG_ERROR, "Decoding nal unit %d %d from hvcC failed\n",
                        type, i);
                 return ret;
             }
+
             bytestream2_skip(&gb, nalsize);
         }
     }
 
-    /* Now store right nal length size, that will be used to parse
-     * all other nals */
+    /* Now store right nal length size, that will be used to parse * all other nals */
     *nal_length_size = nal_len_size;
 
     return ret;
@@ -271,16 +285,60 @@ static int libovvc_decode_frame(AVCodecContext *c, void *outdata, int *outdata_s
     int *nb_pic_out = outdata_size;
     int ret;
 
+    if (!avpkt->size) {
+
+        ret = ovdec_drain_picture(libovvc_dec, &ovframe);
+
+        if (ret < 0) {
+            //return ret;
+        }
+
+        if (ovframe) {
+            c->pix_fmt = AV_PIX_FMT_YUV420P10;
+            c->width   = ovframe->width[0];
+            c->height  = ovframe->height[0];
+            c->coded_width   = ovframe->width[0];
+            c->coded_height  = ovframe->height[0];
+
+            convert_ovframe(outdata, ovframe);
+
+            av_log(NULL, AV_LOG_TRACE, "Draining pic with POC: %d\n", ovframe->poc);
+
+            *outdata_size = 1;
+        }
+
+        return 0;
+    }
+
     OVPictureUnit ovpu;
     H2645Packet pkt = {0};
 
     *nb_pic_out = 0;
 
     if (avpkt->side_data_elems) {
-        av_log(NULL, AV_LOG_ERROR, "Unsupported side data\n");
+        av_log(c, AV_LOG_WARNING, "Unsupported side data\n");
     }
 
-    ret = ff_h2645_packet_split(&pkt, avpkt->data, avpkt->size, c, dec_ctx->is_nalff, dec_ctx->nal_length_size, AV_CODEC_ID_VVC, 0, 0);
+    if (c->extradata_size && c->extradata) {
+        struct OVDecContext *dec_ctx = (struct OVDecContext *)c->priv_data;
+        uint8_t process_extrada = c->extradata != dec_ctx->last_extradata;
+
+        if (process_extrada && c->extradata_size > 3 &&
+            (c->extradata[0] || c->extradata[1] || c->extradata[2] > 1)) {
+
+            ret = ff_vvc_decode_extradata(c->extradata, c->extradata_size, dec_ctx->libovvc_dec,
+                                          &dec_ctx->is_nalff, &dec_ctx->nal_length_size, c);
+
+            if (ret < 0) {
+                av_log(c, AV_LOG_ERROR, "Error reading parameters sets as extradata.\n");
+                return ret;
+            }
+            dec_ctx->last_extradata = c->extradata;
+        }
+    }
+
+    ret = ff_h2645_packet_split(&pkt, avpkt->data, avpkt->size, c, dec_ctx->is_nalff,
+                                dec_ctx->nal_length_size, AV_CODEC_ID_VVC, 0, 0);
     if (ret < 0) {
         av_log(c, AV_LOG_ERROR, "Error splitting the input into NAL units.\n");
         return ret;
@@ -293,7 +351,6 @@ static int libovvc_decode_frame(AVCodecContext *c, void *outdata, int *outdata_s
         return AVERROR_INVALIDDATA;
     }
 
-    #if 1
     ovdec_receive_picture(libovvc_dec, &ovframe);
 
     /* FIXME use ret instead of frame */
@@ -304,92 +361,63 @@ static int libovvc_decode_frame(AVCodecContext *c, void *outdata, int *outdata_s
         c->coded_width   = ovframe->width[0];
         c->coded_height  = ovframe->height[0];
 
-        av_log(NULL, AV_LOG_TRACE, "Received pic with POC: %d\n", ovframe->poc);
-        convert_frame(outdata, ovframe);
+        av_log(c, AV_LOG_TRACE, "Received pic with POC: %d\n", ovframe->poc);
+
+        convert_ovframe(outdata, ovframe);
 
         *nb_pic_out = 1;
     }
-    #else
-        c->pix_fmt = AV_PIX_FMT_YUV420P10;
-        c->width   = 3840;
-        c->height  = 2160;
-        c->coded_width   = 3840;
-        c->coded_height  = 2160;
-    #endif
+
+    unref_ovvc_nalus(&ovpu);
+
+    ff_h2645_packet_uninit(&pkt);
 
     av_free(ovpu.nalus);
+
     return 0;
+}
+
+static void set_libovvc_log_level(int level) {
+    extern int ov_log_level;
+    ov_log_level = level;
 }
 
 static int libovvc_decode_init(AVCodecContext *c) {
     struct OVDecContext *dec_ctx = (struct OVDecContext *)c->priv_data;
     OVVCDec **libovvc_dec_p = (OVVCDec**) &dec_ctx->libovvc_dec;
     int ret;
+    int nb_frame_th = dec_ctx->nb_frame_th;
+    int nb_entry_th = dec_ctx->nb_entry_th;
 
-    ret = ovdec_init(libovvc_dec_p);
+    int display_output = 1;
+
+    set_libovvc_log_level(dec_ctx->log_level);
+
+    ret = ovdec_init(libovvc_dec_p, display_output, nb_frame_th, nb_entry_th);
+
     if (ret < 0) {
         av_log(c, AV_LOG_ERROR, "Could not init Open VVC decoder\n");
         return AVERROR_DECODER_NOT_FOUND;
     }
-    dec_ctx->is_nalff = 0;
+
+    dec_ctx->is_nalff        = 0;
     dec_ctx->nal_length_size = 0;
 
     if (c->extradata && c->extradata_size) {
         struct OVDecContext *dec_ctx = (struct OVDecContext *)c->priv_data;
-        OVVCDec *libovvc_dec = dec_ctx->libovvc_dec;
-        OVFrame *ovframe = NULL;
 
         if (c->extradata_size > 3 && (c->extradata[0] || c->extradata[1] || c->extradata[2] > 1)) {
+            dec_ctx->last_extradata = c->extradata;
 
-    OVFrame *ovframe = NULL;
-            ret = ff_vvc_decode_extradata(c->extradata, c->extradata_size, libovvc_dec,
+            ret = ff_vvc_decode_extradata(c->extradata, c->extradata_size, dec_ctx->libovvc_dec,
                                           &dec_ctx->is_nalff, &dec_ctx->nal_length_size, c);
 
-    #if 0
-    ovdec_receive_picture(libovvc_dec, &ovframe);
-
-    /* FIXME use ret instead of frame */
-    if (ovframe) {
-        c->pix_fmt = AV_PIX_FMT_YUV420P10;
-#if 1
-        c->width   = ovframe->width[0];
-        c->height  = ovframe->height[0];
-        c->coded_width   = ovframe->width[0];
-        c->coded_height  = ovframe->height[0];
-#endif
-
-        ovframe_unref(&ovframe);
-
-    }
-    #elif 0
-
-        c->pix_fmt = AV_PIX_FMT_YUV420P10;
-        c->width   = 1920;
-        c->height  = 1080;
-        c->coded_width   = 1920;
-        c->coded_height  = 1080;
-        c->framerate.num=50;
-        c->framerate.den=1;
-    #endif
             if (ret < 0) {
-                av_log(c, AV_LOG_ERROR, "Error splitting the input into NAL units.\n");
+                av_log(c, AV_LOG_ERROR, "Error reading parameters sets as extradata.\n");
                 return ret;
             }
-            av_log(c, AV_LOG_ERROR, "Experimental format\n");
-        } else {
-            av_log(c, AV_LOG_ERROR, "Extra data init\n");
         }
     }
-
-        #if 0
-        c->pix_fmt = AV_PIX_FMT_YUV420P10;
-        c->width   = 3840;
-        c->height  = 2160;
-        c->coded_width   = 3840;
-        c->coded_height  = 2160;
-        c->framerate.num=50;
-        c->framerate.den=1;
-        #endif
     return 0;
 }
 
@@ -404,8 +432,37 @@ static int libovvc_decode_free(AVCodecContext *c) {
 }
 
 static void libovvc_decode_flush(AVCodecContext *c) {
-            av_log(c, AV_LOG_ERROR, "FLUSH\n");
+    struct OVDecContext *dec_ctx = (struct OVDecContext *)c->priv_data;
+    OVVCDec *libovvc_dec = dec_ctx->libovvc_dec;
+    av_log(c, AV_LOG_ERROR, "FLUSH\n");
 
+    OVFrame *ovframe = NULL;
+    int ret;
+
+    do {
+        ret = ovdec_drain_picture(libovvc_dec, &ovframe);
+        #if 0
+        if (ret < 0) {
+            return ret;
+        }
+        #endif
+
+        if (ovframe) {
+            av_log(c, AV_LOG_TRACE, "Flushing pic with POC: %d\n", ovframe->poc);
+            ovframe_unref(&ovframe);
+        }
+    } while (ret > 0);
+
+    libovvc_decode_free(c);
+    #if 0
+    if (ret < 0) {
+        return;
+    }
+    #endif
+
+    libovvc_decode_init(c);
+
+    return;
 }
 
 static int libovvc_update_thread_context(AVCodecContext *dst, const AVCodecContext *src) {
@@ -413,7 +470,16 @@ static int libovvc_update_thread_context(AVCodecContext *dst, const AVCodecConte
     return 0;
 }
 
+#define OFFSET(x) offsetof(struct OVDecContext, x)
+#define PAR (AV_OPT_FLAG_DECODING_PARAM | AV_OPT_FLAG_VIDEO_PARAM)
+
 static const AVOption options[] = {
+    { "threads_frame", "Number of threads to be used on frames", OFFSET(nb_frame_th),
+        AV_OPT_TYPE_INT, {.i64 = 1}, 0, 16, PAR },
+    { "threads_tile", "Number of threads to be used on tiles", OFFSET(nb_entry_th),
+        AV_OPT_TYPE_INT, {.i64 = 1}, 0, 16, PAR },
+    { "log_level", "Verbosity of OpenVVC decoder", OFFSET(log_level),
+        AV_OPT_TYPE_INT, {.i64 = 1}, 0, 5, PAR },
     { NULL },
 };
 
@@ -429,16 +495,16 @@ AVCodec ff_libopenvvc_decoder = {
     .long_name             = NULL_IF_CONFIG_SMALL("Open VVC(Versatile Video Coding)"),
     .type                  = AVMEDIA_TYPE_VIDEO,
     .id                    = AV_CODEC_ID_VVC,
-    .priv_data_size        = sizeof(OVVCDec*),
+    .priv_data_size        = sizeof(struct OVDecContext),
     .priv_class            = &libovvc_decoder_class,
     .init                  = libovvc_decode_init,
     .close                 = libovvc_decode_free,
     .decode                = libovvc_decode_frame,
     .flush                 = libovvc_decode_flush,
     .update_thread_context = ONLY_IF_THREADS_ENABLED(libovvc_update_thread_context),
-    #if 0
-    .capabilities          = AV_CODEC_CAP_DR1 | AV_CODEC_CAP_DELAY,
+    .capabilities          = AV_CODEC_CAP_DELAY,
+#if 0
     .caps_internal         = FF_CODEC_CAP_INIT_THREADSAFE | FF_CODEC_CAP_EXPORTS_CROPPING,
-                             #endif
+#endif
     .profiles              = NULL_IF_CONFIG_SMALL(ff_vvc_profiles),
 };
