@@ -1,6 +1,6 @@
 /*
  * VVC MP4 to Annex B byte stream format filter
- * copyright (c) 2015 Anton Khirnov
+ * copyright (c) 2021 Josselin Cozanet
  *
  * This file is part of FFmpeg.
  *

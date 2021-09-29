@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2014 Tim Walker <tdskywalker@gmail.com>
+ * Copyright (c) 2021 Josselin Cozanet <j.cozanet@ateme.com>
  *
  * This file is part of FFmpeg.
  *
