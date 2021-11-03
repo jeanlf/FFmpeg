@@ -496,8 +496,8 @@ static int vvcc_parse_sps(GetBitContext *gb,
     if(get_bits1(gb)) { // sps_subpic_info_present_flag
       unsigned int sps_num_subpics_minus1 = get_ue_golomb_long(gb);
       if(sps_num_subpics_minus1 > 0) { // sps_num_subpics_minus1
-	sps_independant_subpics_flag = get_bits1(gb);
-	sps_subpic_same_size_flag = get_bits1(gb);
+	    sps_independant_subpics_flag = get_bits1(gb);
+	    sps_subpic_same_size_flag = get_bits1(gb);
       }
       for(int i = 0; sps_num_subpics_minus1 > 0 && i <= sps_num_subpics_minus1; i++) {
 	if(!sps_subpic_same_size_flag || i == 0) {
