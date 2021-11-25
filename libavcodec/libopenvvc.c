@@ -131,7 +131,18 @@ static void convert_ovframe(AVFrame *avframe, const OVFrame *ovframe) {
     avframe->buf[0] = av_buffer_create(ovframe, sizeof(ovframe),
                                        ovvc_unref_ovframe, NULL, 0);
 
-    avframe->pict_type = AV_PIX_FMT_YUV420P10;
+    avframe->color_trc       = ovframe->frame_info.color_desc.transfer_characteristics;
+    avframe->color_primaries = ovframe->frame_info.color_desc.colour_primaries;
+    avframe->colorspace      = ovframe->frame_info.color_desc.matrix_coeffs;
+
+    av_log(NULL, AV_LOG_ERROR, "trc %d, color_primaries %d colorspace %d\n", avframe->color_trc, 
+        avframe->color_primaries,
+        avframe->colorspace);
+
+    avframe->format = AV_PIX_FMT_YUV420P10;
+
+
+
 }
 
 static int ff_vvc_decode_extradata(const uint8_t *data, int size, OVVCDec *dec,
@@ -301,6 +312,7 @@ static int libovvc_decode_frame(AVCodecContext *c, void *outdata, int *outdata_s
             c->coded_height  = ovframe->height[0];
 
             convert_ovframe(outdata, ovframe);
+
 
             av_log(NULL, AV_LOG_TRACE, "Draining pic with POC: %d\n", ovframe->poc);
 
