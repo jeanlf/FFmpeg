@@ -46,6 +46,26 @@ struct OVDecContext{
      uint8_t *last_extradata;
 };
 
+#define OFFSET(x) offsetof(struct OVDecContext, x)
+#define PAR (AV_OPT_FLAG_DECODING_PARAM | AV_OPT_FLAG_VIDEO_PARAM)
+
+static const AVOption options[] = {
+    { "threads_frame", "Number of threads to be used on frames", OFFSET(nb_frame_th),
+        AV_OPT_TYPE_INT, {.i64 = 0}, 0, 16, PAR },
+    { "threads_tile", "Number of threads to be used on tiles", OFFSET(nb_entry_th),
+        AV_OPT_TYPE_INT, {.i64 = 8}, 0, 16, PAR },
+    { "log_level", "Verbosity of OpenVVC decoder", OFFSET(log_level),
+        AV_OPT_TYPE_INT, {.i64 = 1}, 0, 5, PAR },
+    { NULL },
+};
+
+static const AVClass libovvc_decoder_class = {
+    .class_name = "Open VVC decoder",
+    .item_name  = av_default_item_name,
+    .option     = options,
+    .version    = LIBAVUTIL_VERSION_INT,
+};
+
 static int copy_rpbs_info(OVNALUnit **ovnalu_p, const uint8_t *rbsp_buffer, int raw_size, const int *skipped_bytes_pos, int skipped_bytes) {
 
     uint8_t *rbsp_cpy = av_malloc(raw_size + 8);
@@ -125,24 +145,17 @@ static void convert_ovframe(AVFrame *avframe, const OVFrame *ovframe) {
     avframe->linesize[1] = ovframe->linesize[1];
     avframe->linesize[2] = ovframe->linesize[2];
 
-    avframe->width  = ovframe->width[0];
-    avframe->height = ovframe->height[0];
-
-    avframe->buf[0] = av_buffer_create(ovframe, sizeof(ovframe),
-                                       ovvc_unref_ovframe, NULL, 0);
+    avframe->width  = ovframe->width;
+    avframe->height = ovframe->height;
 
     avframe->color_trc       = ovframe->frame_info.color_desc.transfer_characteristics;
     avframe->color_primaries = ovframe->frame_info.color_desc.colour_primaries;
     avframe->colorspace      = ovframe->frame_info.color_desc.matrix_coeffs;
 
-    av_log(NULL, AV_LOG_ERROR, "trc %d, color_primaries %d colorspace %d\n", avframe->color_trc, 
-        avframe->color_primaries,
-        avframe->colorspace);
+    avframe->buf[0] = av_buffer_create(ovframe, sizeof(ovframe),
+                                       ovvc_unref_ovframe, NULL, 0);
 
-    avframe->format = AV_PIX_FMT_YUV420P10;
-
-
-
+    avframe->pict_type = ovframe->frame_info.chroma_format == OV_YUV_420_P8 ? AV_PIX_FMT_YUV420P : AV_PIX_FMT_YUV420P10;
 }
 
 static int ff_vvc_decode_extradata(const uint8_t *data, int size, OVVCDec *dec,
@@ -305,16 +318,15 @@ static int libovvc_decode_frame(AVCodecContext *c, void *outdata, int *outdata_s
         }
 
         if (ovframe) {
-            c->pix_fmt = AV_PIX_FMT_YUV420P10;
-            c->width   = ovframe->width[0];
-            c->height  = ovframe->height[0];
-            c->coded_width   = ovframe->width[0];
-            c->coded_height  = ovframe->height[0];
+            c->pix_fmt = ovframe->frame_info.chroma_format == OV_YUV_420_P8 ? AV_PIX_FMT_YUV420P : AV_PIX_FMT_YUV420P10;
+            c->width   = ovframe->width;
+            c->height  = ovframe->height;
+            c->coded_width   = ovframe->width;
+            c->coded_height  = ovframe->height;
 
             convert_ovframe(outdata, ovframe);
 
-
-            av_log(NULL, AV_LOG_TRACE, "Draining pic with POC: %d\n", ovframe->poc);
+            av_log(c, AV_LOG_TRACE, "Draining pic with POC: %d\n", ovframe->poc);
 
             *outdata_size = 1;
         }
@@ -367,11 +379,11 @@ static int libovvc_decode_frame(AVCodecContext *c, void *outdata, int *outdata_s
 
     /* FIXME use ret instead of frame */
     if (ovframe) {
-        c->pix_fmt = AV_PIX_FMT_YUV420P10;
-        c->width   = ovframe->width[0];
-        c->height  = ovframe->height[0];
-        c->coded_width   = ovframe->width[0];
-        c->coded_height  = ovframe->height[0];
+        c->pix_fmt = ovframe->frame_info.chroma_format == OV_YUV_420_P8 ? AV_PIX_FMT_YUV420P : AV_PIX_FMT_YUV420P10;
+        c->width   = ovframe->width;
+        c->height  = ovframe->height;
+        c->coded_width   = ovframe->width;
+        c->coded_height  = ovframe->height;
 
         av_log(c, AV_LOG_TRACE, "Received pic with POC: %d\n", ovframe->poc);
 
@@ -389,9 +401,19 @@ static int libovvc_decode_frame(AVCodecContext *c, void *outdata, int *outdata_s
     return 0;
 }
 
+static int ov_log_level;
+
 static void set_libovvc_log_level(int level) {
-    extern int ov_log_level;
     ov_log_level = level;
+}
+
+static void libovvc_log(void* ctx, int log_level, const char* fmt, va_list vl)
+{
+     static const uint8_t log_level_lut[6] = {AV_LOG_ERROR, AV_LOG_WARNING, AV_LOG_INFO, AV_LOG_TRACE, AV_LOG_DEBUG, AV_LOG_VERBOSE};
+     AVClass *avcl = &libovvc_decoder_class;
+     if (log_level < ov_log_level) {
+         av_vlog(&avcl, log_level_lut[log_level], fmt, vl);
+     }
 }
 
 static int libovvc_decode_init(AVCodecContext *c) {
@@ -405,7 +427,17 @@ static int libovvc_decode_init(AVCodecContext *c) {
 
     set_libovvc_log_level(dec_ctx->log_level);
 
-    ret = ovdec_init(libovvc_dec_p, display_output, nb_frame_th, nb_entry_th);
+    ovdec_set_log_callback(libovvc_log);
+
+    ret = ovdec_init(libovvc_dec_p);
+    if (ret < 0) {
+        av_log(c, AV_LOG_ERROR, "Could not init Open VVC decoder\n");
+        return AVERROR_DECODER_NOT_FOUND;
+    }
+
+    ovdec_config_threads(*libovvc_dec_p, nb_entry_th, nb_frame_th);
+
+    ret = ovdec_start(*libovvc_dec_p);
 
     if (ret < 0) {
         av_log(c, AV_LOG_ERROR, "Could not init Open VVC decoder\n");
@@ -482,26 +514,6 @@ static int libovvc_update_thread_context(AVCodecContext *dst, const AVCodecConte
     return 0;
 }
 
-#define OFFSET(x) offsetof(struct OVDecContext, x)
-#define PAR (AV_OPT_FLAG_DECODING_PARAM | AV_OPT_FLAG_VIDEO_PARAM)
-
-static const AVOption options[] = {
-    { "threads_frame", "Number of threads to be used on frames", OFFSET(nb_frame_th),
-        AV_OPT_TYPE_INT, {.i64 = 1}, 0, 16, PAR },
-    { "threads_tile", "Number of threads to be used on tiles", OFFSET(nb_entry_th),
-        AV_OPT_TYPE_INT, {.i64 = 1}, 0, 16, PAR },
-    { "log_level", "Verbosity of OpenVVC decoder", OFFSET(log_level),
-        AV_OPT_TYPE_INT, {.i64 = 1}, 0, 5, PAR },
-    { NULL },
-};
-
-static const AVClass libovvc_decoder_class = {
-    .class_name = "Open VVC decoder",
-    .item_name  = av_default_item_name,
-    .option     = options,
-    .version    = LIBAVUTIL_VERSION_INT,
-};
-
 AVCodec ff_libopenvvc_decoder = {
     .name                  = "ovvc",
     .long_name             = NULL_IF_CONFIG_SMALL("Open VVC(Versatile Video Coding)"),
@@ -513,8 +525,8 @@ AVCodec ff_libopenvvc_decoder = {
     .close                 = libovvc_decode_free,
     .decode                = libovvc_decode_frame,
     .flush                 = libovvc_decode_flush,
-    .update_thread_context = ONLY_IF_THREADS_ENABLED(libovvc_update_thread_context),
-    .capabilities          = AV_CODEC_CAP_DELAY,
+    .capabilities          = AV_CODEC_CAP_DELAY | AV_CODEC_CAP_OTHER_THREADS,
+    .wrapper_name          = "OpenVVC",
 #if 0
     .caps_internal         = FF_CODEC_CAP_INIT_THREADSAFE | FF_CODEC_CAP_EXPORTS_CROPPING,
 #endif
