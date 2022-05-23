@@ -35,7 +35,7 @@
 #include "libavutil/frame.h"
 #include "libavutil/log.h"
 
-#include "vvdec/vvdec.h"
+#include <vvdec/vvdec.h>
 
 #define VVDEC_LOG_ERROR( ...) \
     { \
@@ -89,7 +89,7 @@ static av_cold void ff_vvdec_printParameterInfo( AVCodecContext *avctx, vvdecPar
   VVDEC_LOG_DBG( "threads: %d\n",params->threads );
 }
 
-static av_cold int ff_vvdec_set_pix_fmt(AVCodecContext *avctx, vvdecFrame* frame )
+static int ff_vvdec_set_pix_fmt(AVCodecContext *avctx, vvdecFrame* frame )
 {
     if( NULL != frame->picAttributes && NULL != frame->picAttributes->vui &&
         frame->picAttributes->vui->colourDescriptionPresentFlag )
@@ -331,8 +331,14 @@ static av_cold int ff_vvdec_decode_frame( AVCodecContext *avctx, void *data, int
         av_image_copy(pcAVFrame->data, pcAVFrame->linesize, src_data,
                       src_linesizes, avctx->pix_fmt, frame->width, frame->height );
         
-        pcAVFrame->pts     = frame->ctsValid ? frame->cts : AV_NOPTS_VALUE;
-        pcAVFrame->pkt_dts = AV_NOPTS_VALUE;
+        //pcAVFrame->pts     = frame->ctsValid ? frame->cts : AV_NOPTS_VALUE;
+        //pcAVFrame->pkt_dts = AV_NOPTS_VALUE;
+        if( frame->picAttributes )
+        {
+          pcAVFrame->key_frame = frame->picAttributes->isRefPic;
+          pcAVFrame->pict_type = (frame->picAttributes->sliceType != VVDEC_SLICETYPE_UNKNOWN) ?
+                                  frame->picAttributes->sliceType+1 : AV_PICTURE_TYPE_NONE;
+        }
 
         if( 0 != vvdec_frame_unref( s->vvdecDec, frame ) )
         {
@@ -406,4 +412,5 @@ AVCodec ff_libvvdec_decoder = {
   .pix_fmts        = pix_fmts_vvc,
   .priv_class      = &libvvdec_class,
   .wrapper_name    = "libvvdec",
+
 };
