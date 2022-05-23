@@ -412,5 +412,4 @@ AVCodec ff_libvvdec_decoder = {
   .pix_fmts        = pix_fmts_vvc,
   .priv_class      = &libvvdec_class,
   .wrapper_name    = "libvvdec",
-
 };
