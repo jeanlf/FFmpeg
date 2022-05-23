@@ -1,5 +1,5 @@
 /*
- * H.266 decoding using the VVenC library
+ * H.266 decoding using the VVdeC library
  *
  * Copyright (c) 2018-2022, Fraunhofer-Gesellschaft zur Förderung der angewandten Forschung e.V.
  *
