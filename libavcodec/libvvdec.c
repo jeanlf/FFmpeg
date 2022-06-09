@@ -1,19 +1,24 @@
-/**
-  \ingroup avcodec
-  \file    libvvdec.cpp
-  \brief   This file contains the implementation of the hhi vvc VVdeC plugin.
-  \author  christian.lehmann@hhi.fraunhofer.de
-  \date    March/20/2021
-
-  Copyright:
-  2021 Fraunhofer Institute for Telecommunications, Heinrich-Hertz-Institut (HHI)
-  The copyright of this software source code is the property of HHI.
-  This software may be used and/or copied only with the written permission
-  of HHI and in accordance with the terms and conditions stipulated
-  in the agreement/contract under which the software has been supplied.
-  The software distributed under this license is distributed on an "AS IS" basis,
-  WITHOUT WARRANTY OF ANY KIND, either expressed or implied.
-*/
+/*
+ * H.266 decoding using the VVdeC library
+ *
+ * Copyright (c) 2018-2022, Fraunhofer-Gesellschaft zur Förderung der angewandten Forschung e.V.
+ *
+ * This file is part of FFmpeg.
+ *
+ * FFmpeg is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
+ *
+ * FFmpeg is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * Lesser General Public License for more details.
+ *
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with FFmpeg; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
+ */
 
 #include <stdio.h>
 #include <stdint.h>
@@ -30,7 +35,7 @@
 #include "libavutil/frame.h"
 #include "libavutil/log.h"
 
-#include "vvdec/vvdec.h"
+#include <vvdec/vvdec.h>
 
 #define VVDEC_LOG_ERROR( ...) \
     { \
@@ -66,6 +71,7 @@ typedef struct VVdeCContext {
    AVClass         *av_class;
    VVdeCOptions     options;      // decoding options
    vvdecDecoder*    vvdecDec;
+   vvdecParams      vvdecParams;
    bool             bFlush;
 }VVdeCContext;
 
@@ -83,7 +89,7 @@ static av_cold void ff_vvdec_printParameterInfo( AVCodecContext *avctx, vvdecPar
   VVDEC_LOG_DBG( "threads: %d\n",params->threads );
 }
 
-static av_cold int ff_vvdec_set_pix_fmt(AVCodecContext *avctx, vvdecFrame* frame )
+static int ff_vvdec_set_pix_fmt(AVCodecContext *avctx, vvdecFrame* frame )
 {
     if( NULL != frame->picAttributes && NULL != frame->picAttributes->vui &&
         frame->picAttributes->vui->colourDescriptionPresentFlag )
@@ -164,41 +170,40 @@ static av_cold int ff_vvdec_set_pix_fmt(AVCodecContext *avctx, vvdecFrame* frame
  */
 static av_cold int ff_vvdec_decode_init(AVCodecContext *avctx)
 {
-  vvdecParams params;
-
   VVdeCContext *s = (VVdeCContext*)avctx->priv_data;
 
-  VVDEC_LOG_DBG("ff_vvdec_decode_init::init() threads %d\n", avctx->thread_count );
+  VVDEC_LOG_DBG("ff_vvdec_decode_init() threads %d\n", avctx->thread_count );
 
-  vvdec_params_default( &params );
-  params.logLevel = VVDEC_DETAILS;
+  vvdec_params_default( &s->vvdecParams );
+  s->vvdecParams.logLevel = VVDEC_DETAILS;
 
-  if     ( av_log_get_level() >= AV_LOG_DEBUG )   params.logLevel = VVDEC_DETAILS;
-  else if( av_log_get_level() >= AV_LOG_VERBOSE ) params.logLevel = VVDEC_INFO;     // VVDEC_INFO will output per picture info
-  else if( av_log_get_level() >= AV_LOG_INFO )    params.logLevel = VVDEC_WARNING;  // AV_LOG_INFO is ffmpeg default
-  else params.logLevel = VVDEC_SILENT;
+  if     ( av_log_get_level() >= AV_LOG_DEBUG )   s->vvdecParams.logLevel = VVDEC_DETAILS;
+  else if( av_log_get_level() >= AV_LOG_VERBOSE ) s->vvdecParams.logLevel = VVDEC_INFO;     // VVDEC_INFO will output per picture info
+  else if( av_log_get_level() >= AV_LOG_INFO )    s->vvdecParams.logLevel = VVDEC_WARNING;  // AV_LOG_INFO is ffmpeg default
+  else s->vvdecParams.logLevel = VVDEC_SILENT;
 
   // set desired decoding options
 
   // threading
   if( avctx->thread_count > 0 )
   {
-    params.threads = avctx->thread_count;  // number of worker threads (should not exceed the number of physical cpu's)
+    s->vvdecParams.threads = avctx->thread_count;  // number of worker threads (should not exceed the number of physical cpu's)
   }
   else
   {
-    params.threads = -1; // get max cpus
+    s->vvdecParams.threads = -1; // get max cpus
   }
 
-  ff_vvdec_printParameterInfo( avctx, &params );
-  s->vvdecDec = vvdec_decoder_open( &params );
+  ff_vvdec_printParameterInfo( avctx, &s->vvdecParams );
+  s->vvdecDec = vvdec_decoder_open( &s->vvdecParams );
   if( !s->vvdecDec )
   {
-    VVDEC_LOG_ERROR( "cannot init hhi vvc decoder\n" );
+    av_log(avctx, AV_LOG_ERROR, "cannot init vvc decoder\n" );
     return -1;
   }
 
   vvdec_set_logging_callback( s->vvdecDec, ff_vvdec_log_callback );
+  s->bFlush = false;
 
   return 0;
 }
@@ -212,6 +217,8 @@ static av_cold int ff_vvdec_decode_close(AVCodecContext *avctx)
     av_log(avctx, AV_LOG_ERROR, "cannot close vvdec\n" );
     return -1;
   }
+
+  s->bFlush = false;
 
   return 0;
 }
@@ -255,12 +262,12 @@ static av_cold int ff_vvdec_decode_frame( AVCodecContext *avctx, void *data, int
     {
       if( iRet == VVDEC_TRY_AGAIN )
       {
-        VVDEC_LOG_DBG( "vvdec::decode - more input data needed" );
+        VVDEC_LOG_DBG( "vvdec::decode - more input data needed\n" );
       }
       else if( iRet == VVDEC_EOF )
       {
         s->bFlush = true;
-        VVDEC_LOG_VERBOSE( "vvdec::decode - eof reached" );
+        VVDEC_LOG_DBG( "vvdec::decode - eof reached\n" );
       }
       else
       {
@@ -310,42 +317,28 @@ static av_cold int ff_vvdec_decode_frame( AVCodecContext *avctx, void *data, int
             av_log(avctx, AV_LOG_INFO, "dimension change! %dx%d -> %dx%d\n",
                    avctx->width, avctx->height, frame->width, frame->height);
 
-            avctx->coded_width  = frame->width;
-            avctx->coded_height = frame->height;
-            avctx->width        = AV_CEIL_RSHIFT(frame->width,  avctx->lowres);
-            avctx->height       = AV_CEIL_RSHIFT(frame->height, avctx->lowres);
+            iRet = ff_set_dimensions(avctx, frame->width, frame->height);
+            if (iRet < 0)
+                return iRet;
         }
 
-        pcAVFrame->width  = frame->width;
-        pcAVFrame->height = frame->height;
-        pcAVFrame->format = avctx->pix_fmt;
-
-        pcAVFrame->color_trc = avctx->color_trc;
-        pcAVFrame->color_primaries = avctx->color_primaries;
-        pcAVFrame->colorspace = avctx->colorspace;
-
-        pcAVFrame->interlaced_frame = 0;
-        pcAVFrame->top_field_first  = 0;
-        if (frame->ctsValid)
-          pcAVFrame->pts = frame->cts;
-
-        iRet = av_frame_get_buffer( pcAVFrame, 32 );
-        if( iRet < 0 )
-        {
-          av_log(avctx, AV_LOG_ERROR, "Could not allocate the video frame data\n");
-          return iRet;
-        }
-
-        /* make sure the frame data is writable */
-        iRet = av_frame_make_writable( pcAVFrame );
-        if( iRet < 0 )
-        {
-          av_log(avctx, AV_LOG_ERROR, "Could not make frame writable\n");
-          return iRet;
+        // The decoder doesn't support decoding into a user provided buffer yet, so do a copy
+        if (ff_get_buffer(avctx, pcAVFrame, 0) < 0) {
+            av_log(avctx, AV_LOG_ERROR, "Could not allocate the video frame data\n");
+            return AVERROR(ENOMEM);
         }
 
         av_image_copy(pcAVFrame->data, pcAVFrame->linesize, src_data,
                       src_linesizes, avctx->pix_fmt, frame->width, frame->height );
+        
+        //pcAVFrame->pts     = frame->ctsValid ? frame->cts : AV_NOPTS_VALUE;
+        //pcAVFrame->pkt_dts = AV_NOPTS_VALUE;
+        if( frame->picAttributes )
+        {
+          pcAVFrame->key_frame = frame->picAttributes->isRefPic;
+          pcAVFrame->pict_type = (frame->picAttributes->sliceType != VVDEC_SLICETYPE_UNKNOWN) ?
+                                  frame->picAttributes->sliceType+1 : AV_PICTURE_TYPE_NONE;
+        }
 
         if( 0 != vvdec_frame_unref( s->vvdecDec, frame ) )
         {
@@ -360,6 +353,25 @@ static av_cold int ff_vvdec_decode_frame( AVCodecContext *avctx, void *data, int
   return avpkt->size;
 }
 
+static av_cold void ff_vvdec_decode_flush(AVCodecContext *avctx)
+{
+  VVdeCContext *s = (VVdeCContext*)avctx->priv_data;
+
+  if( 0 != vvdec_decoder_close(s->vvdecDec) )
+  {
+    av_log(avctx, AV_LOG_ERROR, "cannot close vvdec during flush\n" );
+  }
+
+  s->vvdecDec = vvdec_decoder_open( &s->vvdecParams );
+  if( !s->vvdecDec )
+  {
+    av_log(avctx, AV_LOG_ERROR, "cannot reinit vvdec during flush\n" );
+  }
+
+  vvdec_set_logging_callback( s->vvdecDec, ff_vvdec_log_callback );
+
+  s->bFlush = false;
+}
 
 static const enum AVPixelFormat pix_fmts_vvc[] = {
     AV_PIX_FMT_YUV420P,
@@ -378,7 +390,7 @@ static const AVOption libvvdec_options[] = {
 };
 
 static const AVClass libvvdec_class = {
-    "VVC decoder",
+    "libvvdec-vvc decoder",
     av_default_item_name,
     libvvdec_options,
     LIBAVUTIL_VERSION_INT,
@@ -393,12 +405,11 @@ AVCodec ff_libvvdec_decoder = {
   .init            = ff_vvdec_decode_init,
   .decode          = ff_vvdec_decode_frame,
   .close           = ff_vvdec_decode_close,
+  .flush           = ff_vvdec_decode_flush,
   .capabilities    = AV_CODEC_CAP_DELAY | AV_CODEC_CAP_OTHER_THREADS,
   .bsfs            = "vvc_mp4toannexb",
   .caps_internal   = FF_CODEC_CAP_AUTO_THREADS,
   .pix_fmts        = pix_fmts_vvc,
   .priv_class      = &libvvdec_class,
   .wrapper_name    = "libvvdec",
-
 };
-
