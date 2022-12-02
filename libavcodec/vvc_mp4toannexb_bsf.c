@@ -129,7 +129,7 @@ static int vvc_extradata_to_annexb(AVBSFContext *ctx)
         int cnt;
         int type = bytestream2_get_byte(&gb) & 0x1f;
 
-        if (type != VVC_OPI_NUT || type != VVC_DCI_NUT)
+        if ((type != VVC_OPI_NUT) && (type != VVC_DCI_NUT))
             cnt  = bytestream2_get_be16(&gb);
         else
             cnt = 1;
@@ -138,7 +138,8 @@ static int vvc_extradata_to_annexb(AVBSFContext *ctx)
             "nalu_type %d cnt %d\n", type, cnt);
 
         if (!(type == VVC_VPS_NUT || type == VVC_SPS_NUT || type == VVC_PPS_NUT ||
-              type == VVC_PREFIX_SEI_NUT || type == VVC_SUFFIX_SEI_NUT)) {
+              type == VVC_PREFIX_SEI_NUT || type == VVC_SUFFIX_SEI_NUT ||
+              type == VVC_OPI_NUT || type == VVC_DCI_NUT)) {
             av_log(ctx, AV_LOG_ERROR, "Invalid NAL unit type in extradata: %d\n",
                    type);
             ret = AVERROR_INVALIDDATA;
