@@ -779,6 +779,13 @@ typedef struct CodedBitstreamH266Context {
         H266RawPH   *ph;
     } priv;
 
+    // The currently active parameter sets.  These are updated when any
+    // NAL unit refers to the relevant parameter set.  These pointers
+    // must also be present in the arrays above.
+    const H266RawVPS *active_vps;
+    const H266RawSPS *active_sps;
+    const H266RawPPS *active_pps;
+
 } CodedBitstreamH266Context;
 
 #endif /* AVCODEC_CBS_H266_H */

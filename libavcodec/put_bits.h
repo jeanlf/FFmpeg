@@ -32,8 +32,7 @@
 #include "config.h"
 #include "libavutil/intreadwrite.h"
 #include "libavutil/avassert.h"
-
-#include "version.h"
+#include "libavutil/common.h"
 
 #if ARCH_X86_64
 // TODO: Benchmark and optionally enable on other 64-bit architectures.
@@ -52,9 +51,6 @@ typedef struct PutBitContext {
     BitBuf bit_buf;
     int bit_left;
     uint8_t *buf, *buf_ptr, *buf_end;
-#if LIBAVCODEC_VERSION_MAJOR < 59
-    int size_in_bits;
-#endif
 } PutBitContext;
 
 /**
@@ -176,11 +172,6 @@ static inline void flush_put_bits_le(PutBitContext *s)
     s->bit_left = BUF_BITS;
     s->bit_buf  = 0;
 }
-
-#if FF_API_AVPRIV_PUT_BITS
-void avpriv_align_put_bits(PutBitContext *s);
-void avpriv_copy_bits(PutBitContext *pb, const uint8_t *src, int length);
-#endif
 
 #ifdef BITSTREAM_WRITER_LE
 #define ff_put_string ff_put_string_unsupported_here

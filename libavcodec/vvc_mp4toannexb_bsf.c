@@ -244,7 +244,7 @@ static int vvc_mp4toannexb_filter(AVBSFContext *ctx, AVPacket *out)
         }
 
         nalu_type = (bytestream2_peek_be16(&gb) >> 3) & 0x1f;
-        is_irap   = nalu_type >= VVC_IDR_W_RADL && nalu_type <= VVC_RSV_IRAP_11;
+        is_irap   = (nalu_type >= VVC_IDR_W_RADL) && (nalu_type <= VVC_RSV_IRAP_11);
         if (is_irap) {
           break;
         }
@@ -273,7 +273,7 @@ static int vvc_mp4toannexb_filter(AVBSFContext *ctx, AVPacket *out)
         nalu_type = (bytestream2_peek_be16(&gb) >> 3) & 0x1f;
 
         /* prepend extradata to IRAP frames */
-        add_extradata = is_irap && nalu_type != VVC_AUD_NUT && !added_extra;
+        add_extradata = is_irap && (nalu_type != VVC_AUD_NUT) && !added_extra;
         extra_size    = add_extradata * ctx->par_out->extradata_size;
         added_extra  |= add_extradata;
 
@@ -310,10 +310,10 @@ static const enum AVCodecID codec_ids[] = {
     AV_CODEC_ID_VVC, AV_CODEC_ID_NONE,
 };
 
-const AVBitStreamFilter ff_vvc_mp4toannexb_bsf = {
-    .name           = "vvc_mp4toannexb",
+const FFBitStreamFilter ff_vvc_mp4toannexb_bsf = {
+    .p.name           = "vvc_mp4toannexb",
     .priv_data_size = sizeof(VVCBSFContext),
     .init           = vvc_mp4toannexb_init,
     .filter         = vvc_mp4toannexb_filter,
-    .codec_ids      = codec_ids,
+    .p.codec_ids      = codec_ids,
 };

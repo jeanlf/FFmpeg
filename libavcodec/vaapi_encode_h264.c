@@ -29,11 +29,13 @@
 #include "avcodec.h"
 #include "cbs.h"
 #include "cbs_h264.h"
+#include "codec_internal.h"
 #include "h264.h"
 #include "h264_levels.h"
 #include "h264_sei.h"
-#include "internal.h"
+#include "h2645data.h"
 #include "vaapi_encode.h"
+#include "version.h"
 
 enum {
     SEI_TIMING         = 0x01,
@@ -377,24 +379,17 @@ static int vaapi_encode_h264_init_sequence_params(AVCodecContext *avctx)
 
     if (avctx->sample_aspect_ratio.num != 0 &&
         avctx->sample_aspect_ratio.den != 0) {
-        static const AVRational sar_idc[] = {
-            {   0,  0 },
-            {   1,  1 }, {  12, 11 }, {  10, 11 }, {  16, 11 },
-            {  40, 33 }, {  24, 11 }, {  20, 11 }, {  32, 11 },
-            {  80, 33 }, {  18, 11 }, {  15, 11 }, {  64, 33 },
-            { 160, 99 }, {   4,  3 }, {   3,  2 }, {   2,  1 },
-        };
         int num, den, i;
         av_reduce(&num, &den, avctx->sample_aspect_ratio.num,
                   avctx->sample_aspect_ratio.den, 65535);
-        for (i = 0; i < FF_ARRAY_ELEMS(sar_idc); i++) {
-            if (num == sar_idc[i].num &&
-                den == sar_idc[i].den) {
+        for (i = 0; i < FF_ARRAY_ELEMS(ff_h2645_pixel_aspect); i++) {
+            if (num == ff_h2645_pixel_aspect[i].num &&
+                den == ff_h2645_pixel_aspect[i].den) {
                 sps->vui.aspect_ratio_idc = i;
                 break;
             }
         }
-        if (i >= FF_ARRAY_ELEMS(sar_idc)) {
+        if (i >= FF_ARRAY_ELEMS(ff_h2645_pixel_aspect)) {
             sps->vui.aspect_ratio_idc = 255;
             sps->vui.sar_width  = num;
             sps->vui.sar_height = den;
@@ -1304,7 +1299,7 @@ static const AVOption vaapi_encode_h264_options[] = {
     { NULL },
 };
 
-static const AVCodecDefault vaapi_encode_h264_defaults[] = {
+static const FFCodecDefault vaapi_encode_h264_defaults[] = {
     { "b",              "0"   },
     { "bf",             "2"   },
     { "g",              "120" },
@@ -1324,24 +1319,25 @@ static const AVClass vaapi_encode_h264_class = {
     .version    = LIBAVUTIL_VERSION_INT,
 };
 
-AVCodec ff_h264_vaapi_encoder = {
-    .name           = "h264_vaapi",
-    .long_name      = NULL_IF_CONFIG_SMALL("H.264/AVC (VAAPI)"),
-    .type           = AVMEDIA_TYPE_VIDEO,
-    .id             = AV_CODEC_ID_H264,
+const FFCodec ff_h264_vaapi_encoder = {
+    .p.name         = "h264_vaapi",
+    CODEC_LONG_NAME("H.264/AVC (VAAPI)"),
+    .p.type         = AVMEDIA_TYPE_VIDEO,
+    .p.id           = AV_CODEC_ID_H264,
     .priv_data_size = sizeof(VAAPIEncodeH264Context),
     .init           = &vaapi_encode_h264_init,
-    .receive_packet = &ff_vaapi_encode_receive_packet,
+    FF_CODEC_RECEIVE_PACKET_CB(&ff_vaapi_encode_receive_packet),
     .close          = &vaapi_encode_h264_close,
-    .priv_class     = &vaapi_encode_h264_class,
-    .capabilities   = AV_CODEC_CAP_DELAY | AV_CODEC_CAP_HARDWARE |
+    .p.priv_class   = &vaapi_encode_h264_class,
+    .p.capabilities = AV_CODEC_CAP_DELAY | AV_CODEC_CAP_HARDWARE |
                       AV_CODEC_CAP_DR1,
-    .caps_internal  = FF_CODEC_CAP_INIT_CLEANUP,
+    .caps_internal  = FF_CODEC_CAP_NOT_INIT_THREADSAFE |
+                      FF_CODEC_CAP_INIT_CLEANUP,
     .defaults       = vaapi_encode_h264_defaults,
-    .pix_fmts = (const enum AVPixelFormat[]) {
+    .p.pix_fmts = (const enum AVPixelFormat[]) {
         AV_PIX_FMT_VAAPI,
         AV_PIX_FMT_NONE,
     },
     .hw_configs     = ff_vaapi_encode_hw_configs,
-    .wrapper_name   = "vaapi",
+    .p.wrapper_name = "vaapi",
 };

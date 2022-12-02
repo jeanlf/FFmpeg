@@ -30,11 +30,15 @@
  * MJPEG decoder.
  */
 
+#include "config_components.h"
+
+#include "libavutil/display.h"
 #include "libavutil/imgutils.h"
 #include "libavutil/avassert.h"
 #include "libavutil/opt.h"
 #include "avcodec.h"
 #include "blockdsp.h"
+#include "codec_internal.h"
 #include "copy_block.h"
 #include "decode.h"
 #include "hwconfig.h"
@@ -49,6 +53,7 @@
 #include "tiff.h"
 #include "exif.h"
 #include "bytestream.h"
+#include "tiff_common.h"
 
 
 static int init_default_huffman_tables(MJpegDecodeContext *s)
@@ -60,22 +65,23 @@ static int init_default_huffman_tables(MJpegDecodeContext *s)
         const uint8_t *values;
         int length;
     } ht[] = {
-        { 0, 0, avpriv_mjpeg_bits_dc_luminance,
-                avpriv_mjpeg_val_dc, 12 },
-        { 0, 1, avpriv_mjpeg_bits_dc_chrominance,
-                avpriv_mjpeg_val_dc, 12 },
-        { 1, 0, avpriv_mjpeg_bits_ac_luminance,
-                avpriv_mjpeg_val_ac_luminance,   162 },
-        { 1, 1, avpriv_mjpeg_bits_ac_chrominance,
-                avpriv_mjpeg_val_ac_chrominance, 162 },
-        { 2, 0, avpriv_mjpeg_bits_ac_luminance,
-                avpriv_mjpeg_val_ac_luminance,   162 },
-        { 2, 1, avpriv_mjpeg_bits_ac_chrominance,
-                avpriv_mjpeg_val_ac_chrominance, 162 },
+        { 0, 0, ff_mjpeg_bits_dc_luminance,
+                ff_mjpeg_val_dc, 12 },
+        { 0, 1, ff_mjpeg_bits_dc_chrominance,
+                ff_mjpeg_val_dc, 12 },
+        { 1, 0, ff_mjpeg_bits_ac_luminance,
+                ff_mjpeg_val_ac_luminance,   162 },
+        { 1, 1, ff_mjpeg_bits_ac_chrominance,
+                ff_mjpeg_val_ac_chrominance, 162 },
+        { 2, 0, ff_mjpeg_bits_ac_luminance,
+                ff_mjpeg_val_ac_luminance,   162 },
+        { 2, 1, ff_mjpeg_bits_ac_chrominance,
+                ff_mjpeg_val_ac_chrominance, 162 },
     };
     int i, ret;
 
     for (i = 0; i < FF_ARRAY_ELEMS(ht); i++) {
+        ff_free_vlc(&s->vlcs[ht[i].class][ht[i].index]);
         ret = ff_mjpeg_build_vlc(&s->vlcs[ht[i].class][ht[i].index],
                                  ht[i].bits, ht[i].values,
                                  ht[i].class == 1, s->avctx);
@@ -109,8 +115,8 @@ static void init_idct(AVCodecContext *avctx)
     MJpegDecodeContext *s = avctx->priv_data;
 
     ff_idctdsp_init(&s->idsp, avctx);
-    ff_init_scantable(s->idsp.idct_permutation, &s->scantable,
-                      ff_zigzag_direct);
+    ff_permute_scantable(s->permutated_scantable, ff_zigzag_direct,
+                         s->idsp.idct_permutation);
 }
 
 av_cold int ff_mjpeg_decode_init(AVCodecContext *avctx)
@@ -125,12 +131,10 @@ av_cold int ff_mjpeg_decode_init(AVCodecContext *avctx)
         s->picture_ptr = s->picture;
     }
 
-    s->pkt = av_packet_alloc();
-    if (!s->pkt)
-        return AVERROR(ENOMEM);
+    s->pkt = avctx->internal->in_pkt;
 
     s->avctx = avctx;
-    ff_blockdsp_init(&s->bdsp, avctx);
+    ff_blockdsp_init(&s->bdsp);
     ff_hpeldsp_init(&s->hdsp, avctx->flags);
     init_idct(avctx);
     s->buffer_size   = 0;
@@ -153,7 +157,8 @@ av_cold int ff_mjpeg_decode_init(AVCodecContext *avctx)
         if (ff_mjpeg_decode_dht(s)) {
             av_log(avctx, AV_LOG_ERROR,
                    "error using external huffman table, switching back to internal\n");
-            init_default_huffman_tables(s);
+            if ((ret = init_default_huffman_tables(s)) < 0)
+                return ret;
         }
     }
     if (avctx->field_order == AV_FIELD_BB) { /* quicktime icefloe 019 */
@@ -215,8 +220,10 @@ int ff_mjpeg_decode_dqt(MJpegDecodeContext *s)
         for (i = 0; i < 64; i++) {
             s->quant_matrixes[index][i] = get_bits(&s->gb, pr ? 16 : 8);
             if (s->quant_matrixes[index][i] == 0) {
-                av_log(s->avctx, AV_LOG_ERROR, "dqt: 0 quant value\n");
-                return AVERROR_INVALIDDATA;
+                int log_level = s->avctx->err_recognition & AV_EF_EXPLODE ? AV_LOG_ERROR : AV_LOG_WARNING;
+                av_log(s->avctx, log_level, "dqt: 0 quant value\n");
+                if (s->avctx->err_recognition & AV_EF_EXPLODE)
+                    return AVERROR_INVALIDDATA;
             }
         }
 
@@ -366,7 +373,7 @@ int ff_mjpeg_decode_sof(MJpegDecodeContext *s)
     s->v_max         = 1;
     for (i = 0; i < nb_components; i++) {
         /* component id */
-        s->component_id[i] = get_bits(&s->gb, 8) - 1;
+        s->component_id[i] = get_bits(&s->gb, 8);
         h_count[i]         = get_bits(&s->gb, 4);
         v_count[i]         = get_bits(&s->gb, 4);
         /* compute hmax and vmax (only used in interleaved case) */
@@ -391,10 +398,10 @@ int ff_mjpeg_decode_sof(MJpegDecodeContext *s)
                s->component_id[i], s->quant_index[i]);
     }
     if (   nb_components == 4
-        && s->component_id[0] == 'C' - 1
-        && s->component_id[1] == 'M' - 1
-        && s->component_id[2] == 'Y' - 1
-        && s->component_id[3] == 'K' - 1)
+        && s->component_id[0] == 'C'
+        && s->component_id[1] == 'M'
+        && s->component_id[2] == 'Y'
+        && s->component_id[3] == 'K')
         s->adobe_transform = 0;
 
     if (s->ls && (s->h_max > 1 || s->v_max > 1)) {
@@ -516,7 +523,7 @@ int ff_mjpeg_decode_sof(MJpegDecodeContext *s)
                 s->avctx->pix_fmt = s->bits <= 9 ? AV_PIX_FMT_BGR24 : AV_PIX_FMT_BGR48;
             else {
                 if (   s->adobe_transform == 0
-                    || s->component_id[0] == 'R' - 1 && s->component_id[1] == 'G' - 1 && s->component_id[2] == 'B' - 1) {
+                    || s->component_id[0] == 'R' && s->component_id[1] == 'G' && s->component_id[2] == 'B') {
                     s->avctx->pix_fmt = s->bits <= 8 ? AV_PIX_FMT_GBRP : AV_PIX_FMT_GBRP16;
                 } else {
                     if (s->bits <= 8) s->avctx->pix_fmt = s->cs_itu601 ? AV_PIX_FMT_YUV444P : AV_PIX_FMT_YUVJ444P;
@@ -580,7 +587,7 @@ int ff_mjpeg_decode_sof(MJpegDecodeContext *s)
         case 0x43000000:
         case 0x44000000:
             if(s->bits <= 8)
-                s->avctx->pix_fmt = AV_PIX_FMT_GRAY8;
+                s->avctx->pix_fmt = s->force_pal8 ? AV_PIX_FMT_PAL8 : AV_PIX_FMT_GRAY8;
             else
                 s->avctx->pix_fmt = AV_PIX_FMT_GRAY16;
             break;
@@ -589,7 +596,7 @@ int ff_mjpeg_decode_sof(MJpegDecodeContext *s)
         case 0x14111100:
         case 0x22211100:
         case 0x22112100:
-            if (s->component_id[0] == 'Q' && s->component_id[1] == 'F' && s->component_id[2] == 'A') {
+            if (s->component_id[0] == 'R' && s->component_id[1] == 'G' && s->component_id[2] == 'B') {
                 if (s->bits <= 8) s->avctx->pix_fmt = AV_PIX_FMT_GBRP;
                 else
                     goto unk_pixfmt;
@@ -604,7 +611,7 @@ int ff_mjpeg_decode_sof(MJpegDecodeContext *s)
             }
             break;
         case 0x21111100:
-            if (s->component_id[0] == 'Q' && s->component_id[1] == 'F' && s->component_id[2] == 'A') {
+            if (s->component_id[0] == 'R' && s->component_id[1] == 'G' && s->component_id[2] == 'B') {
                 if (s->bits <= 8) s->avctx->pix_fmt = AV_PIX_FMT_GBRP;
                 else
                     goto unk_pixfmt;
@@ -679,7 +686,7 @@ int ff_mjpeg_decode_sof(MJpegDecodeContext *s)
             } else if (s->nb_components != 1) {
                 av_log(s->avctx, AV_LOG_ERROR, "Unsupported number of components %d\n", s->nb_components);
                 return AVERROR_PATCHWELCOME;
-            } else if (s->palette_index && s->bits <= 8)
+            } else if ((s->palette_index || s->force_pal8) && s->bits <= 8)
                 s->avctx->pix_fmt = AV_PIX_FMT_PAL8;
             else if (s->bits <= 8)
                 s->avctx->pix_fmt = AV_PIX_FMT_GRAY8;
@@ -728,6 +735,10 @@ int ff_mjpeg_decode_sof(MJpegDecodeContext *s)
         s->picture_ptr->key_frame = 1;
         s->got_picture            = 1;
 
+        // Lets clear the palette to avoid leaving uninitialized values in it
+        if (s->avctx->pix_fmt == AV_PIX_FMT_PAL8)
+            memset(s->picture_ptr->data[1], 0, 1024);
+
         for (i = 0; i < 4; i++)
             s->linesize[i] = s->picture_ptr->linesize[i] << s->interlaced;
 
@@ -753,8 +764,8 @@ int ff_mjpeg_decode_sof(MJpegDecodeContext *s)
             int size = bw * bh * s->h_count[i] * s->v_count[i];
             av_freep(&s->blocks[i]);
             av_freep(&s->last_nnz[i]);
-            s->blocks[i]       = av_mallocz_array(size, sizeof(**s->blocks));
-            s->last_nnz[i]     = av_mallocz_array(size, sizeof(**s->last_nnz));
+            s->blocks[i]       = av_calloc(size, sizeof(**s->blocks));
+            s->last_nnz[i]     = av_calloc(size, sizeof(**s->last_nnz));
             if (!s->blocks[i] || !s->last_nnz[i])
                 return AVERROR(ENOMEM);
             s->block_stride[i] = bw * s->h_count[i];
@@ -835,7 +846,7 @@ static int decode_block(MJpegDecodeContext *s, int16_t *block, int component,
                 av_log(s->avctx, AV_LOG_ERROR, "error count: %d\n", i);
                 return AVERROR_INVALIDDATA;
             }
-            j        = s->scantable.permutated[i];
+            j        = s->permutated_scantable[i];
             block[j] = level * quant_matrix[i];
         }
     } while (i < 63);
@@ -898,14 +909,14 @@ static int decode_block_progressive(MJpegDecodeContext *s, int16_t *block,
 
                 if (i >= se) {
                     if (i == se) {
-                        j = s->scantable.permutated[se];
+                        j = s->permutated_scantable[se];
                         block[j] = level * (quant_matrix[se] << Al);
                         break;
                     }
                     av_log(s->avctx, AV_LOG_ERROR, "error count: %d\n", i);
                     return AVERROR_INVALIDDATA;
                 }
-                j = s->scantable.permutated[i];
+                j = s->permutated_scantable[i];
                 block[j] = level * (quant_matrix[i] << Al);
             } else {
                 if (run == 0xF) {// ZRL - skip 15 coefficients
@@ -953,7 +964,7 @@ for (; ; i++) {                                                     \
         }                                                           \
         break;                                                      \
     }                                                               \
-    j = s->scantable.permutated[i];                                 \
+    j = s->permutated_scantable[i];                                 \
     if (block[j])                                                   \
         REFINE_BIT(j)                                               \
     else if (run-- == 0)                                            \
@@ -983,7 +994,7 @@ static int decode_block_refinement(MJpegDecodeContext *s, int16_t *block,
                 val = SHOW_UBITS(re, &s->gb, 1);
                 LAST_SKIP_BITS(re, &s->gb, 1);
                 ZERO_RUN;
-                j = s->scantable.permutated[i];
+                j = s->permutated_scantable[i];
                 val--;
                 block[j] = ((quant_matrix[i] << Al) ^ val) - val;
                 if (i == se) {
@@ -1015,7 +1026,7 @@ static int decode_block_refinement(MJpegDecodeContext *s, int16_t *block,
     }
 
     for (; i <= last; i++) {
-        j = s->scantable.permutated[i];
+        j = s->permutated_scantable[i];
         if (block[j])
             REFINE_BIT(j)
     }
@@ -1081,6 +1092,10 @@ static int ljpeg_decode_rgb_scan(MJpegDecodeContext *s, int nb_components, int p
         return AVERROR_INVALIDDATA;
     if (s->v_max != 1 || s->h_max != 1 || !s->lossless)
         return AVERROR_INVALIDDATA;
+    if (s->bayer) {
+        if (s->rct || s->pegasus_rct)
+            return AVERROR_INVALIDDATA;
+    }
 
 
     s->restart_count = s->restart_interval;
@@ -1197,6 +1212,8 @@ static int ljpeg_decode_rgb_scan(MJpegDecodeContext *s, int nb_components, int p
                 ptr[3*mb_x + 2] = buffer[mb_x][2] + ptr[3*mb_x + 1];
             }
         } else if (s->bayer) {
+            if (s->bits <= 8)
+                return AVERROR_PATCHWELCOME;
             if (nb_components == 1) {
                 /* Leave decoding to the TIFF/DNG decoder (see comment in ff_mjpeg_decode_sof) */
                 for (mb_x = 0; mb_x < width; mb_x++)
@@ -1572,6 +1589,9 @@ static int mjpeg_decode_scan_progressive_ac(MJpegDecodeContext *s, int ss,
                 else
                     ret = decode_block_progressive(s, *block, last_nnz, s->ac_index[0],
                                                    quant_matrix, ss, se, Al, &EOBRUN);
+
+                if (ret >= 0 && get_bits_left(&s->gb) < 0)
+                    ret = AVERROR_INVALIDDATA;
                 if (ret < 0) {
                     av_log(s->avctx, AV_LOG_ERROR,
                            "error y=%d x=%d\n", mb_y, mb_x);
@@ -1657,7 +1677,7 @@ int ff_mjpeg_decode_sos(MJpegDecodeContext *s, const uint8_t *mb_bitmask,
         return AVERROR_INVALIDDATA;
     }
     for (i = 0; i < nb_components; i++) {
-        id = get_bits(&s->gb, 8) - 1;
+        id = get_bits(&s->gb, 8);
         av_log(s->avctx, AV_LOG_DEBUG, "component: %d\n", id);
         /* find component index */
         for (index = 0; index < s->nb_components; index++)
@@ -1928,6 +1948,8 @@ static int mjpeg_decode_app(MJpegDecodeContext *s)
         }
 
         len -= 9;
+        if (s->bayer)
+            goto out;
         if (s->got_picture)
             if (rgb != s->rgb || pegasus_rct != s->pegasus_rct) {
                 av_log(s->avctx, AV_LOG_WARNING, "Mismatching LJIF tag\n");
@@ -2086,28 +2108,26 @@ static int mjpeg_decode_app(MJpegDecodeContext *s)
 
         /* Allocate if this is the first APP2 we've seen. */
         if (s->iccnum == 0) {
-            s->iccdata     = av_mallocz(nummarkers * sizeof(*(s->iccdata)));
-            s->iccdatalens = av_mallocz(nummarkers * sizeof(*(s->iccdatalens)));
-            if (!s->iccdata || !s->iccdatalens) {
+            if (!FF_ALLOCZ_TYPED_ARRAY(s->iccentries, nummarkers)) {
                 av_log(s->avctx, AV_LOG_ERROR, "Could not allocate ICC data arrays\n");
                 return AVERROR(ENOMEM);
             }
             s->iccnum = nummarkers;
         }
 
-        if (s->iccdata[seqno - 1]) {
+        if (s->iccentries[seqno - 1].data) {
             av_log(s->avctx, AV_LOG_WARNING, "Duplicate ICC sequence number\n");
             goto out;
         }
 
-        s->iccdatalens[seqno - 1]  = len;
-        s->iccdata[seqno - 1]      = av_malloc(len);
-        if (!s->iccdata[seqno - 1]) {
+        s->iccentries[seqno - 1].length = len;
+        s->iccentries[seqno - 1].data   = av_malloc(len);
+        if (!s->iccentries[seqno - 1].data) {
             av_log(s->avctx, AV_LOG_ERROR, "Could not allocate ICC data buffer\n");
             return AVERROR(ENOMEM);
         }
 
-        memcpy(s->iccdata[seqno - 1], align_get_bits(&s->gb), len);
+        memcpy(s->iccentries[seqno - 1].data, align_get_bits(&s->gb), len);
         skip_bits(&s->gb, len << 3);
         len = 0;
         s->iccread++;
@@ -2316,11 +2336,11 @@ static void reset_icc_profile(MJpegDecodeContext *s)
 {
     int i;
 
-    if (s->iccdata)
+    if (s->iccentries) {
         for (i = 0; i < s->iccnum; i++)
-            av_freep(&s->iccdata[i]);
-    av_freep(&s->iccdata);
-    av_freep(&s->iccdatalens);
+            av_freep(&s->iccentries[i].data);
+        av_freep(&s->iccentries);
+    }
 
     s->iccread = 0;
     s->iccnum  = 0;
@@ -2397,6 +2417,9 @@ int ff_mjpeg_receive_frame(AVCodecContext *avctx, AVFrame *frame)
     int i, index;
     int ret = 0;
     int is16bit;
+    AVDictionaryEntry *e = NULL;
+
+    s->force_pal8 = 0;
 
     if (avctx->codec_id == AV_CODEC_ID_SMVJPEG && s->smv_next_frame > 0)
         return smv_process_frame(avctx, frame);
@@ -2411,7 +2434,7 @@ int ff_mjpeg_receive_frame(AVCodecContext *avctx, AVFrame *frame)
     ret = mjpeg_get_packet(avctx);
     if (ret < 0)
         return ret;
-
+redo_for_pal8:
     buf_ptr = s->pkt->data;
     buf_end = s->pkt->data + s->pkt->size;
     while (buf_ptr < buf_end) {
@@ -2542,6 +2565,8 @@ int ff_mjpeg_receive_frame(AVCodecContext *avctx, AVFrame *frame)
             if (!CONFIG_JPEGLS_DECODER ||
                 (ret = ff_jpegls_decode_lse(s)) < 0)
                 goto fail;
+            if (ret == 1)
+                goto redo_for_pal8;
             break;
         case EOI:
 eoi_parser:
@@ -2747,28 +2772,18 @@ the_end:
         }
     }
     if (s->flipped && !s->rgb) {
-        int j;
         ret = av_pix_fmt_get_chroma_sub_sample(s->avctx->pix_fmt, &hshift, &vshift);
         if (ret)
             return ret;
 
-        av_assert0(s->nb_components == av_pix_fmt_count_planes(s->picture_ptr->format));
+        av_assert0(s->nb_components == av_pix_fmt_count_planes(frame->format));
         for (index=0; index<s->nb_components; index++) {
-            uint8_t *dst = s->picture_ptr->data[index];
-            int w = s->picture_ptr->width;
-            int h = s->picture_ptr->height;
-            if(index && index<3){
-                w = AV_CEIL_RSHIFT(w, hshift);
+            int h = frame->height;
+            if (index && index < 3)
                 h = AV_CEIL_RSHIFT(h, vshift);
-            }
-            if(dst){
-                uint8_t *dst2 = dst + s->picture_ptr->linesize[index]*(h-1);
-                for (i=0; i<h/2; i++) {
-                    for (j=0; j<w; j++)
-                        FFSWAP(int, dst[j], dst2[j]);
-                    dst  += s->picture_ptr->linesize[index];
-                    dst2 -= s->picture_ptr->linesize[index];
-                }
+            if (frame->data[index]) {
+                frame->data[index]     += (h - 1) * frame->linesize[index];
+                frame->linesize[index] *= -1;
             }
         }
     }
@@ -2836,7 +2851,7 @@ the_end:
 
         /* Sum size of all parts. */
         for (i = 0; i < s->iccnum; i++)
-            total_size += s->iccdatalens[i];
+            total_size += s->iccentries[i].length;
 
         sd = av_frame_new_side_data(frame, AV_FRAME_DATA_ICC_PROFILE, total_size);
         if (!sd) {
@@ -2846,8 +2861,59 @@ the_end:
 
         /* Reassemble the parts, which are now in-order. */
         for (i = 0; i < s->iccnum; i++) {
-            memcpy(sd->data + offset, s->iccdata[i], s->iccdatalens[i]);
-            offset += s->iccdatalens[i];
+            memcpy(sd->data + offset, s->iccentries[i].data, s->iccentries[i].length);
+            offset += s->iccentries[i].length;
+        }
+    }
+
+    if (e = av_dict_get(s->exif_metadata, "Orientation", e, AV_DICT_IGNORE_SUFFIX)) {
+        char *value = e->value + strspn(e->value, " \n\t\r"), *endptr;
+        int orientation = strtol(value, &endptr, 0);
+
+        if (!*endptr) {
+            AVFrameSideData *sd = NULL;
+
+            if (orientation >= 2 && orientation <= 8) {
+                int32_t *matrix;
+
+                sd = av_frame_new_side_data(frame, AV_FRAME_DATA_DISPLAYMATRIX, sizeof(int32_t) * 9);
+                if (!sd) {
+                    av_log(s->avctx, AV_LOG_ERROR, "Could not allocate frame side data\n");
+                    return AVERROR(ENOMEM);
+                }
+
+                matrix = (int32_t *)sd->data;
+
+                switch (orientation) {
+                case 2:
+                    av_display_rotation_set(matrix, 0.0);
+                    av_display_matrix_flip(matrix, 1, 0);
+                    break;
+                case 3:
+                    av_display_rotation_set(matrix, 180.0);
+                    break;
+                case 4:
+                    av_display_rotation_set(matrix, 180.0);
+                    av_display_matrix_flip(matrix, 1, 0);
+                    break;
+                case 5:
+                    av_display_rotation_set(matrix, 90.0);
+                    av_display_matrix_flip(matrix, 1, 0);
+                    break;
+                case 6:
+                    av_display_rotation_set(matrix, 90.0);
+                    break;
+                case 7:
+                    av_display_rotation_set(matrix, -90.0);
+                    av_display_matrix_flip(matrix, 1, 0);
+                    break;
+                case 8:
+                    av_display_rotation_set(matrix, -90.0);
+                    break;
+                default:
+                    av_assert0(0);
+                }
+            }
         }
     }
 
@@ -2894,8 +2960,6 @@ av_cold int ff_mjpeg_decode_end(AVCodecContext *avctx)
     } else if (s->picture_ptr)
         av_frame_unref(s->picture_ptr);
 
-    av_packet_free(&s->pkt);
-
     av_frame_free(&s->smv_frame);
 
     av_freep(&s->buffer);
@@ -2916,6 +2980,7 @@ av_cold int ff_mjpeg_decode_end(AVCodecContext *avctx)
     reset_icc_profile(s);
 
     av_freep(&s->hwaccel_picture_private);
+    av_freep(&s->jls_state);
 
     return 0;
 }
@@ -2945,22 +3010,24 @@ static const AVClass mjpegdec_class = {
     .version    = LIBAVUTIL_VERSION_INT,
 };
 
-AVCodec ff_mjpeg_decoder = {
-    .name           = "mjpeg",
-    .long_name      = NULL_IF_CONFIG_SMALL("MJPEG (Motion JPEG)"),
-    .type           = AVMEDIA_TYPE_VIDEO,
-    .id             = AV_CODEC_ID_MJPEG,
+const FFCodec ff_mjpeg_decoder = {
+    .p.name         = "mjpeg",
+    CODEC_LONG_NAME("MJPEG (Motion JPEG)"),
+    .p.type         = AVMEDIA_TYPE_VIDEO,
+    .p.id           = AV_CODEC_ID_MJPEG,
     .priv_data_size = sizeof(MJpegDecodeContext),
     .init           = ff_mjpeg_decode_init,
     .close          = ff_mjpeg_decode_end,
-    .receive_frame  = ff_mjpeg_receive_frame,
+    FF_CODEC_RECEIVE_FRAME_CB(ff_mjpeg_receive_frame),
     .flush          = decode_flush,
-    .capabilities   = AV_CODEC_CAP_DR1,
-    .max_lowres     = 3,
-    .priv_class     = &mjpegdec_class,
-    .profiles       = NULL_IF_CONFIG_SMALL(ff_mjpeg_profiles),
-    .caps_internal  = FF_CODEC_CAP_INIT_THREADSAFE | FF_CODEC_CAP_INIT_CLEANUP |
-                      FF_CODEC_CAP_SKIP_FRAME_FILL_PARAM | FF_CODEC_CAP_SETS_PKT_DTS,
+    .p.capabilities = AV_CODEC_CAP_DR1,
+    .p.max_lowres   = 3,
+    .p.priv_class   = &mjpegdec_class,
+    .p.profiles     = NULL_IF_CONFIG_SMALL(ff_mjpeg_profiles),
+    .caps_internal  = FF_CODEC_CAP_INIT_CLEANUP |
+                      FF_CODEC_CAP_SKIP_FRAME_FILL_PARAM |
+                      FF_CODEC_CAP_SETS_PKT_DTS |
+                      FF_CODEC_CAP_ICC_PROFILES,
     .hw_configs     = (const AVCodecHWConfigInternal *const []) {
 #if CONFIG_MJPEG_NVDEC_HWACCEL
                         HWACCEL_NVDEC(mjpeg),
@@ -2973,36 +3040,36 @@ AVCodec ff_mjpeg_decoder = {
 };
 #endif
 #if CONFIG_THP_DECODER
-AVCodec ff_thp_decoder = {
-    .name           = "thp",
-    .long_name      = NULL_IF_CONFIG_SMALL("Nintendo Gamecube THP video"),
-    .type           = AVMEDIA_TYPE_VIDEO,
-    .id             = AV_CODEC_ID_THP,
+const FFCodec ff_thp_decoder = {
+    .p.name         = "thp",
+    CODEC_LONG_NAME("Nintendo Gamecube THP video"),
+    .p.type         = AVMEDIA_TYPE_VIDEO,
+    .p.id           = AV_CODEC_ID_THP,
     .priv_data_size = sizeof(MJpegDecodeContext),
     .init           = ff_mjpeg_decode_init,
     .close          = ff_mjpeg_decode_end,
-    .receive_frame  = ff_mjpeg_receive_frame,
+    FF_CODEC_RECEIVE_FRAME_CB(ff_mjpeg_receive_frame),
     .flush          = decode_flush,
-    .capabilities   = AV_CODEC_CAP_DR1,
-    .max_lowres     = 3,
-    .caps_internal  = FF_CODEC_CAP_INIT_THREADSAFE | FF_CODEC_CAP_INIT_CLEANUP |
+    .p.capabilities = AV_CODEC_CAP_DR1,
+    .p.max_lowres   = 3,
+    .caps_internal  = FF_CODEC_CAP_INIT_CLEANUP |
                       FF_CODEC_CAP_SETS_PKT_DTS,
 };
 #endif
 
 #if CONFIG_SMVJPEG_DECODER
-AVCodec ff_smvjpeg_decoder = {
-    .name           = "smvjpeg",
-    .long_name      = NULL_IF_CONFIG_SMALL("SMV JPEG"),
-    .type           = AVMEDIA_TYPE_VIDEO,
-    .id             = AV_CODEC_ID_SMVJPEG,
+const FFCodec ff_smvjpeg_decoder = {
+    .p.name         = "smvjpeg",
+    CODEC_LONG_NAME("SMV JPEG"),
+    .p.type         = AVMEDIA_TYPE_VIDEO,
+    .p.id           = AV_CODEC_ID_SMVJPEG,
     .priv_data_size = sizeof(MJpegDecodeContext),
     .init           = ff_mjpeg_decode_init,
     .close          = ff_mjpeg_decode_end,
-    .receive_frame  = ff_mjpeg_receive_frame,
+    FF_CODEC_RECEIVE_FRAME_CB(ff_mjpeg_receive_frame),
     .flush          = decode_flush,
-    .capabilities   = AV_CODEC_CAP_DR1,
-    .caps_internal  = FF_CODEC_CAP_INIT_THREADSAFE | FF_CODEC_CAP_EXPORTS_CROPPING |
+    .p.capabilities = AV_CODEC_CAP_DR1,
+    .caps_internal  = FF_CODEC_CAP_EXPORTS_CROPPING |
                       FF_CODEC_CAP_SETS_PKT_DTS | FF_CODEC_CAP_INIT_CLEANUP,
 };
 #endif

@@ -34,6 +34,8 @@
 #include "libavutil/imgutils.h"
 #include "libavutil/frame.h"
 #include "libavutil/log.h"
+#include "codec_internal.h"
+#include "decode.h"
 
 #include <vvdec/vvdec.h>
 
@@ -224,7 +226,7 @@ static av_cold int ff_vvdec_decode_close(AVCodecContext *avctx)
 }
 
 
-static av_cold int ff_vvdec_decode_frame( AVCodecContext *avctx, void *data, int *got_frame, AVPacket *avpkt )
+static av_cold int ff_vvdec_decode_frame( AVCodecContext *avctx, AVFrame *data, int *got_frame, AVPacket *avpkt )
 {
   VVdeCContext *s = (VVdeCContext*)avctx->priv_data;
 
@@ -331,8 +333,9 @@ static av_cold int ff_vvdec_decode_frame( AVCodecContext *avctx, void *data, int
         av_image_copy(pcAVFrame->data, pcAVFrame->linesize, src_data,
                       src_linesizes, avctx->pix_fmt, frame->width, frame->height );
         
-        //pcAVFrame->pts     = frame->ctsValid ? frame->cts : AV_NOPTS_VALUE;
-        //pcAVFrame->pkt_dts = AV_NOPTS_VALUE;
+        pcAVFrame->pts     = frame->ctsValid ? frame->cts : AV_NOPTS_VALUE;
+        pcAVFrame->pkt_dts = AV_NOPTS_VALUE;
+
         if( frame->picAttributes )
         {
           pcAVFrame->key_frame = frame->picAttributes->isRefPic;
@@ -396,20 +399,20 @@ static const AVClass libvvdec_class = {
     LIBAVUTIL_VERSION_INT,
 };
 
-AVCodec ff_libvvdec_decoder = {
-  .name            = "libvvdec",
-  .long_name       = "H.266 / VVC Decoder VVdeC",
-  .type            = AVMEDIA_TYPE_VIDEO,
-  .id              = AV_CODEC_ID_VVC,
+FFCodec ff_libvvdec_decoder = {
+  .p.name            = "libvvdec",
+  .p.long_name       = "H.266 / VVC Decoder VVdeC",
+  .p.type            = AVMEDIA_TYPE_VIDEO,
+  .p.id              = AV_CODEC_ID_VVC,
   .priv_data_size  = sizeof(VVdeCContext),
   .init            = ff_vvdec_decode_init,
-  .decode          = ff_vvdec_decode_frame,
+  FF_CODEC_DECODE_CB(ff_vvdec_decode_frame),
   .close           = ff_vvdec_decode_close,
   .flush           = ff_vvdec_decode_flush,
-  .capabilities    = AV_CODEC_CAP_DELAY | AV_CODEC_CAP_OTHER_THREADS,
+  .p.capabilities    = AV_CODEC_CAP_DELAY | AV_CODEC_CAP_OTHER_THREADS,
   .bsfs            = "vvc_mp4toannexb",
   .caps_internal   = FF_CODEC_CAP_AUTO_THREADS,
-  .pix_fmts        = pix_fmts_vvc,
-  .priv_class      = &libvvdec_class,
-  .wrapper_name    = "libvvdec",
+  .p.pix_fmts        = pix_fmts_vvc,
+  .p.priv_class      = &libvvdec_class,
+  .p.wrapper_name    = "libvvdec",
 };

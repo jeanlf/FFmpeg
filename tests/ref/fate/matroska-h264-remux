@@ -1,5 +1,5 @@
-ded6da7e46ce7df1232b116afb0b2f0a *tests/data/fate/matroska-h264-remux.matroska
-2036083 tests/data/fate/matroska-h264-remux.matroska
+3c00191234d5c4d77151d38a86403101 *tests/data/fate/matroska-h264-remux.matroska
+2036033 tests/data/fate/matroska-h264-remux.matroska
 #tb 0: 1/25
 #media_type 0: video
 #codec_id 0: rawvideo

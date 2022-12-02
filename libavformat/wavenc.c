@@ -28,6 +28,8 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
+#include "config_components.h"
+
 #include <stdint.h>
 #include <string.h>
 
@@ -170,12 +172,12 @@ static av_cold int peak_init_writer(AVFormatContext *s)
                "Writing 16 bit peak for 8 bit audio does not make sense\n");
         return AVERROR(EINVAL);
     }
-    if (par->channels > INT_MAX / (wav->peak_bps * wav->peak_ppv))
+    if (par->ch_layout.nb_channels > INT_MAX / (wav->peak_bps * wav->peak_ppv))
         return AVERROR(ERANGE);
-    wav->size_increment = par->channels * wav->peak_bps * wav->peak_ppv;
+    wav->size_increment = par->ch_layout.nb_channels * wav->peak_bps * wav->peak_ppv;
 
-    wav->peak_maxpos = av_mallocz_array(par->channels, sizeof(*wav->peak_maxpos));
-    wav->peak_maxneg = av_mallocz_array(par->channels, sizeof(*wav->peak_maxneg));
+    wav->peak_maxpos = av_calloc(par->ch_layout.nb_channels, sizeof(*wav->peak_maxpos));
+    wav->peak_maxneg = av_calloc(par->ch_layout.nb_channels, sizeof(*wav->peak_maxneg));
     if (!wav->peak_maxpos || !wav->peak_maxneg)
         goto nomem;
 
@@ -205,7 +207,7 @@ static int peak_write_frame(AVFormatContext *s)
     }
     wav->peak_output = tmp;
 
-    for (c = 0; c < par->channels; c++) {
+    for (c = 0; c < par->ch_layout.nb_channels; c++) {
         wav->peak_maxneg[c] = -wav->peak_maxneg[c];
 
         if (wav->peak_bps == 2 && wav->peak_format == PEAK_FORMAT_UINT8) {
@@ -277,7 +279,7 @@ static int peak_write_chunk(AVFormatContext *s)
     avio_wl32(pb, wav->peak_format);            /* 8 or 16 bit */
     avio_wl32(pb, wav->peak_ppv);               /* positive and negative */
     avio_wl32(pb, wav->peak_block_size);        /* frames per value */
-    avio_wl32(pb, par->channels);               /* number of channels */
+    avio_wl32(pb, par->ch_layout.nb_channels);  /* number of channels */
     avio_wl32(pb, wav->peak_num_frames);        /* number of peak frames */
     avio_wl32(pb, -1);                          /* audio sample frame position (not implemented) */
     avio_wl32(pb, 128);                         /* equal to size of header */
@@ -384,7 +386,7 @@ static int wav_write_packet(AVFormatContext *s, AVPacket *pkt)
                 wav->peak_maxpos[c] = FFMAX(wav->peak_maxpos[c], (int16_t)AV_RL16(pkt->data + i));
                 wav->peak_maxneg[c] = FFMIN(wav->peak_maxneg[c], (int16_t)AV_RL16(pkt->data + i));
             }
-            if (++c == s->streams[0]->codecpar->channels) {
+            if (++c == s->streams[0]->codecpar->ch_layout.nb_channels) {
                 c = 0;
                 if (++wav->peak_block_pos == wav->peak_block_size) {
                     int ret = peak_write_frame(s);
@@ -504,7 +506,7 @@ static const AVClass wav_muxer_class = {
     .version    = LIBAVUTIL_VERSION_INT,
 };
 
-AVOutputFormat ff_wav_muxer = {
+const AVOutputFormat ff_wav_muxer = {
     .name              = "wav",
     .long_name         = NULL_IF_CONFIG_SMALL("WAV / WAVE (Waveform Audio)"),
     .mime_type         = "audio/x-wav",
@@ -524,6 +526,16 @@ AVOutputFormat ff_wav_muxer = {
 
 #if CONFIG_W64_MUXER
 #include "w64.h"
+
+static av_cold int w64_init(AVFormatContext *ctx)
+{
+    if (ctx->nb_streams != 1) {
+        av_log(ctx, AV_LOG_ERROR, "This muxer only supports a single stream.\n");
+        return AVERROR(EINVAL);
+    }
+
+    return 0;
+}
 
 static void start_guid(AVIOContext *pb, const uint8_t *guid, int64_t *pos)
 {
@@ -603,13 +615,14 @@ static int w64_write_trailer(AVFormatContext *s)
     return 0;
 }
 
-AVOutputFormat ff_w64_muxer = {
+const AVOutputFormat ff_w64_muxer = {
     .name              = "w64",
     .long_name         = NULL_IF_CONFIG_SMALL("Sony Wave64"),
     .extensions        = "w64",
     .priv_data_size    = sizeof(WAVMuxContext),
     .audio_codec       = AV_CODEC_ID_PCM_S16LE,
     .video_codec       = AV_CODEC_ID_NONE,
+    .init              = w64_init,
     .write_header      = w64_write_header,
     .write_packet      = wav_write_packet,
     .write_trailer     = w64_write_trailer,

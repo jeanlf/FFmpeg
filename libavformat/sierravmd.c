@@ -134,6 +134,7 @@ static int vmd_read_header(AVFormatContext *s)
     /* if sample rate is 0, assume no audio */
     vmd->sample_rate = AV_RL16(&vmd->vmd_header[804]);
     if (vmd->sample_rate) {
+        int channels;
         st = avformat_new_stream(s, NULL);
         if (!st)
             return AVERROR(ENOMEM);
@@ -150,24 +151,22 @@ static int vmd_read_header(AVFormatContext *s)
             st->codecpar->bits_per_coded_sample = 8;
         }
         if (vmd->vmd_header[811] & 0x80) {
-            st->codecpar->channels       = 2;
-            st->codecpar->channel_layout = AV_CH_LAYOUT_STEREO;
+            channels = 2;
         } else if (vmd->vmd_header[811] & 0x2) {
             /* Shivers 2 stereo audio */
             /* Frame length is for 1 channel */
-            st->codecpar->channels       = 2;
-            st->codecpar->channel_layout = AV_CH_LAYOUT_STEREO;
+            channels        = 2;
             st->codecpar->block_align = st->codecpar->block_align << 1;
         } else {
-            st->codecpar->channels       = 1;
-            st->codecpar->channel_layout = AV_CH_LAYOUT_MONO;
+            channels = 1;
         }
+        av_channel_layout_default(&st->codecpar->ch_layout, channels);
         st->codecpar->bit_rate = st->codecpar->sample_rate *
-            st->codecpar->bits_per_coded_sample * st->codecpar->channels;
+            st->codecpar->bits_per_coded_sample * channels;
 
         /* calculate pts */
         num = st->codecpar->block_align;
-        den = st->codecpar->sample_rate * st->codecpar->channels;
+        den = st->codecpar->sample_rate * channels;
         av_reduce(&num, &den, num, den, (1UL<<31)-1);
         if (vst)
             avpriv_set_pts_info(vst, 33, num, den);
@@ -252,16 +251,13 @@ static int vmd_read_header(AVFormatContext *s)
         }
     }
 
-    av_free(raw_frame_table);
 
     vmd->current_frame = 0;
     vmd->frame_count = total_frames;
 
-    return 0;
-
+    ret = 0;
 error:
     av_freep(&raw_frame_table);
-    av_freep(&vmd->frame_table);
     return ret;
 }
 
@@ -317,10 +313,11 @@ static int vmd_read_close(AVFormatContext *s)
     return 0;
 }
 
-AVInputFormat ff_vmd_demuxer = {
+const AVInputFormat ff_vmd_demuxer = {
     .name           = "vmd",
     .long_name      = NULL_IF_CONFIG_SMALL("Sierra VMD"),
     .priv_data_size = sizeof(VmdDemuxContext),
+    .flags_internal = FF_FMT_INIT_CLEANUP,
     .read_probe     = vmd_probe,
     .read_header    = vmd_read_header,
     .read_packet    = vmd_read_packet,

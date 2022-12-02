@@ -24,6 +24,7 @@
 #include "cbs_h266.h"
 #include "internal.h"
 #include "parser.h"
+#include "decode.h"
 
 #define START_CODE 0x000001 ///< start_code_prefix_one_3bytes
 
@@ -337,6 +338,8 @@ static int get_pu_info(PuInfo *info, const CodedBitstreamH266Context *h266,
         nal = pu->units[i].content;
         if (!nal)
             continue;
+		av_log(logctx, AV_LOG_ERROR, "NUT %d.\n", nal->nal_unit_type);
+
         if (IS_PH(nal->nal_unit_type)) {
             info->ph = pu->units[i].content;
             info->ph_ref = pu->units[i].content_ref;
