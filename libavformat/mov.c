@@ -2016,8 +2016,10 @@ static int mov_read_dvc1(MOVContext *c, AVIOContext *pb, MOVAtom atom)
         return AVERROR_INVALIDDATA;
 
     profile_level = avio_r8(pb);
-    if ((profile_level & 0xf0) != 0xc0)
+    if ((profile_level & 0xf0) != 0xc0) {
+        av_log(c->fc, AV_LOG_WARNING, "wrong VC1 profile level\n");
         return 0;
+	}
 
     avio_seek(pb, 6, SEEK_CUR);
     ret = ff_get_extradata(c->fc, st->codecpar, pb, atom.size - 7);
@@ -2508,10 +2510,12 @@ static int mov_finalize_stsd_codec(MOVContext *c, AVIOContext *pb,
     case AV_CODEC_ID_AC3:
     case AV_CODEC_ID_EAC3:
     case AV_CODEC_ID_MPEG1VIDEO:
-    case AV_CODEC_ID_VC1:
     case AV_CODEC_ID_VP8:
     case AV_CODEC_ID_VP9:
         sti->need_parsing = AVSTREAM_PARSE_FULL;
+        break;
+    case AV_CODEC_ID_VC1:
+        sti->need_parsing = AVSTREAM_PARSE_HEADERS;
         break;
     case AV_CODEC_ID_AV1:
         /* field_order detection of H264 requires parsing */
