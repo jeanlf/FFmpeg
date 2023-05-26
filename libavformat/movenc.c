@@ -7511,19 +7511,6 @@ static int mov_write_header(AVFormatContext *s)
             mov->reserved_header_pos = avio_tell(pb);
     }
 
-    if (mov->flags & FF_MOV_FLAG_FRAGMENT) {
-        /* If no fragmentation options have been set, set a default. */
-        if (!(mov->flags & (FF_MOV_FLAG_FRAG_KEYFRAME |
-                            FF_MOV_FLAG_FRAG_CUSTOM |
-                            FF_MOV_FLAG_FRAG_EVERY_FRAME)) &
-            !mov->max_fragment_duration && !mov->max_fragment_size)
-            mov->flags |= FF_MOV_FLAG_FRAG_KEYFRAME;
-    } else {
-        if (mov->flags & FF_MOV_FLAG_FASTSTART)
-            mov->reserved_header_pos = avio_tell(pb);
-        mov_write_mdat_tag(pb, mov);
-    }
-
     return 0;
 }
 
