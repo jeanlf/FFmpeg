@@ -239,11 +239,20 @@ typedef struct RcOverride{
  *
  * Should only be used with encoders flagged with the
  * @ref AV_CODEC_CAP_ENCODER_RECON_FRAME capability.
+ *
+ * @note
+ * Each reconstructed frame returned by the encoder corresponds to the last
+ * encoded packet, i.e. the frames are returned in coded order rather than
+ * presentation order.
+ *
+ * @note
+ * Frame parameters (like pixel format or dimensions) do not have to match the
+ * AVCodecContext values. Make sure to use the values from the returned frame.
  */
 #define AV_CODEC_FLAG_RECON_FRAME     (1 <<  6)
 /**
  * @par decoding
- * Request the decoder to propagate each packets AVPacket.opaque and
+ * Request the decoder to propagate each packet's AVPacket.opaque and
  * AVPacket.opaque_ref to its corresponding output AVFrame.
  *
  * @par encoding:
@@ -547,14 +556,22 @@ typedef struct AVCodecContext {
      */
     AVRational time_base;
 
+#if FF_API_TICKS_PER_FRAME
     /**
      * For some codecs, the time base is closer to the field rate than the frame rate.
      * Most notably, H.264 and MPEG-2 specify time_base as half of frame duration
      * if no telecine is used ...
      *
      * Set to time_base ticks per frame. Default 1, e.g., H.264/MPEG-2 set it to 2.
+     *
+     * @deprecated
+     * - decoding: Use AVCodecDescriptor.props & AV_CODEC_PROP_FIELDS
+     * - encoding: Set AVCodecContext.framerate instead
+     *
      */
+    attribute_deprecated
     int ticks_per_frame;
+#endif
 
     /**
      * Codec delay.
@@ -1007,8 +1024,11 @@ typedef struct AVCodecContext {
 
     /**
      * MPEG vs JPEG YUV range.
-     * - encoding: Set by user
-     * - decoding: Set by libavcodec
+     * - encoding: Set by user to override the default output color range value,
+     *   If not specified, libavcodec sets the color range depending on the
+     *   output format.
+     * - decoding: Set by libavcodec, can be set by the user to propagate the
+     *   color range to components reading from the decoder context.
      */
     enum AVColorRange color_range;
 
@@ -2656,7 +2676,7 @@ int avcodec_send_packet(AVCodecContext *avctx, const AVPacket *avpkt);
 
 /**
  * Return decoded output data from a decoder or encoder (when the
- * AV_CODEC_FLAG_RECON_FRAME flag is used).
+ * @ref AV_CODEC_FLAG_RECON_FRAME flag is used).
  *
  * @param avctx codec context
  * @param frame This will be set to a reference-counted video or audio
@@ -2670,7 +2690,7 @@ int avcodec_send_packet(AVCodecContext *avctx, const AVPacket *avpkt);
  * @retval AVERROR_EOF      the codec has been fully flushed, and there will be
  *                          no more output frames
  * @retval AVERROR(EINVAL)  codec not opened, or it is an encoder without the
- *                          AV_CODEC_FLAG_RECON_FRAME flag enabled
+ *                          @ref AV_CODEC_FLAG_RECON_FRAME flag enabled
  * @retval AVERROR_INPUT_CHANGED current decoded frame has changed parameters with
  *                          respect to first decoded frame. Applicable when flag
  *                          AV_CODEC_FLAG_DROPCHANGED is set.
