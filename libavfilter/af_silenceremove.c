@@ -25,10 +25,8 @@
 
 #include "libavutil/avassert.h"
 #include "libavutil/opt.h"
-#include "libavutil/timestamp.h"
 #include "audio.h"
 #include "filters.h"
-#include "formats.h"
 #include "avfilter.h"
 #include "internal.h"
 
@@ -36,7 +34,16 @@ enum SilenceDetect {
     D_AVG,
     D_RMS,
     D_PEAK,
+    D_MEDIAN,
+    D_PTP,
+    D_DEV,
     D_NB
+};
+
+enum TimestampMode {
+    TS_WRITE,
+    TS_COPY,
+    TS_NB
 };
 
 enum ThresholdMode {
@@ -65,6 +72,8 @@ typedef struct SilenceRemoveContext {
 
     int64_t window_duration_opt;
 
+    int timestamp_mode;
+
     int start_found_periods;
     int stop_found_periods;
 
@@ -84,6 +93,7 @@ typedef struct SilenceRemoveContext {
     int *stop_back;
 
     int64_t window_duration;
+    int cache_size;
 
     int start_window_pos;
     int start_window_size;
@@ -114,25 +124,32 @@ typedef struct SilenceRemoveContext {
 
 #define OFFSET(x) offsetof(SilenceRemoveContext, x)
 #define AF AV_OPT_FLAG_FILTERING_PARAM|AV_OPT_FLAG_AUDIO_PARAM
+#define AFR AV_OPT_FLAG_FILTERING_PARAM|AV_OPT_FLAG_AUDIO_PARAM|AV_OPT_FLAG_RUNTIME_PARAM
 
 static const AVOption silenceremove_options[] = {
     { "start_periods",   "set periods of silence parts to skip from start",    OFFSET(start_periods),       AV_OPT_TYPE_INT,      {.i64=0},     0,      9000, AF },
     { "start_duration",  "set start duration of non-silence part",             OFFSET(start_duration_opt),  AV_OPT_TYPE_DURATION, {.i64=0},     0, INT32_MAX, AF },
-    { "start_threshold", "set threshold for start silence detection",          OFFSET(start_threshold),     AV_OPT_TYPE_DOUBLE,   {.dbl=0},     0,   DBL_MAX, AF },
+    { "start_threshold", "set threshold for start silence detection",          OFFSET(start_threshold),     AV_OPT_TYPE_DOUBLE,   {.dbl=0},     0,   DBL_MAX, AFR },
     { "start_silence",   "set start duration of silence part to keep",         OFFSET(start_silence_opt),   AV_OPT_TYPE_DURATION, {.i64=0},     0, INT32_MAX, AF },
-    { "start_mode",      "set which channel will trigger trimming from start", OFFSET(start_mode),          AV_OPT_TYPE_INT,      {.i64=T_ANY}, T_ANY, T_ALL, AF, "mode" },
-    {   "any",           0,                                                    0,                           AV_OPT_TYPE_CONST,    {.i64=T_ANY}, 0,         0, AF, "mode" },
-    {   "all",           0,                                                    0,                           AV_OPT_TYPE_CONST,    {.i64=T_ALL}, 0,         0, AF, "mode" },
+    { "start_mode",      "set which channel will trigger trimming from start", OFFSET(start_mode),          AV_OPT_TYPE_INT,      {.i64=T_ANY}, T_ANY, T_ALL, AFR, "mode" },
+    {   "any",           0,                                                    0,                           AV_OPT_TYPE_CONST,    {.i64=T_ANY}, 0,         0, AFR, "mode" },
+    {   "all",           0,                                                    0,                           AV_OPT_TYPE_CONST,    {.i64=T_ALL}, 0,         0, AFR, "mode" },
     { "stop_periods",    "set periods of silence parts to skip from end",      OFFSET(stop_periods),        AV_OPT_TYPE_INT,      {.i64=0}, -9000,      9000, AF },
     { "stop_duration",   "set stop duration of silence part",                  OFFSET(stop_duration_opt),   AV_OPT_TYPE_DURATION, {.i64=0},     0, INT32_MAX, AF },
-    { "stop_threshold",  "set threshold for stop silence detection",           OFFSET(stop_threshold),      AV_OPT_TYPE_DOUBLE,   {.dbl=0},     0,   DBL_MAX, AF },
+    { "stop_threshold",  "set threshold for stop silence detection",           OFFSET(stop_threshold),      AV_OPT_TYPE_DOUBLE,   {.dbl=0},     0,   DBL_MAX, AFR },
     { "stop_silence",    "set stop duration of silence part to keep",          OFFSET(stop_silence_opt),    AV_OPT_TYPE_DURATION, {.i64=0},     0, INT32_MAX, AF },
-    { "stop_mode",       "set which channel will trigger trimming from end",   OFFSET(stop_mode),           AV_OPT_TYPE_INT,      {.i64=T_ANY}, T_ANY, T_ALL, AF, "mode" },
+    { "stop_mode",       "set which channel will trigger trimming from end",   OFFSET(stop_mode),           AV_OPT_TYPE_INT,      {.i64=T_ALL}, T_ANY, T_ALL, AFR, "mode" },
     { "detection",       "set how silence is detected",                        OFFSET(detection),           AV_OPT_TYPE_INT,      {.i64=D_RMS}, 0,    D_NB-1, AF, "detection" },
     {   "avg",           "use mean absolute values of samples",                0,                           AV_OPT_TYPE_CONST,    {.i64=D_AVG}, 0,         0, AF, "detection" },
     {   "rms",           "use root mean squared values of samples",            0,                           AV_OPT_TYPE_CONST,    {.i64=D_RMS}, 0,         0, AF, "detection" },
     {   "peak",          "use max absolute values of samples",                 0,                           AV_OPT_TYPE_CONST,    {.i64=D_PEAK},0,         0, AF, "detection" },
+    {   "median",        "use median of absolute values of samples",           0,                           AV_OPT_TYPE_CONST,    {.i64=D_MEDIAN},0,       0, AF, "detection" },
+    {   "ptp",           "use absolute of max peak to min peak difference",    0,                           AV_OPT_TYPE_CONST,    {.i64=D_PTP}, 0,         0, AF, "detection" },
+    {   "dev",           "use standard deviation from values of samples",      0,                           AV_OPT_TYPE_CONST,    {.i64=D_DEV}, 0,         0, AF, "detection" },
     { "window",          "set duration of window for silence detection",       OFFSET(window_duration_opt), AV_OPT_TYPE_DURATION, {.i64=20000}, 0, 100000000, AF },
+    { "timestamp",       "set how every output frame timestamp is processed",  OFFSET(timestamp_mode),      AV_OPT_TYPE_INT,      {.i64=TS_WRITE}, 0, TS_NB-1, AF, "timestamp" },
+    {   "write",         "full timestamps rewrite, keep only the start time",  0,                           AV_OPT_TYPE_CONST,    {.i64=TS_WRITE}, 0,       0, AF, "timestamp" },
+    {   "copy",          "non-dropped frames are left with same timestamp",    0,                           AV_OPT_TYPE_CONST,    {.i64=TS_COPY},  0,       0, AF, "timestamp" },
     { NULL }
 };
 
@@ -208,10 +225,25 @@ static int config_output(AVFilterLink *outlink)
     AVFilterContext *ctx = outlink->src;
     SilenceRemoveContext *s = ctx->priv;
 
+    switch (s->detection) {
+    case D_AVG:
+    case D_RMS:
+        s->cache_size = 1;
+        break;
+    case D_DEV:
+        s->cache_size = 2;
+        break;
+    case D_MEDIAN:
+    case D_PEAK:
+    case D_PTP:
+        s->cache_size = s->window_duration;
+        break;
+    }
+
     s->start_window = ff_get_audio_buffer(outlink, s->window_duration);
     s->stop_window = ff_get_audio_buffer(outlink, s->window_duration);
-    s->start_cache = av_calloc(outlink->ch_layout.nb_channels, s->window_duration * sizeof(*s->start_cache));
-    s->stop_cache = av_calloc(outlink->ch_layout.nb_channels, s->window_duration * sizeof(*s->stop_cache));
+    s->start_cache = av_calloc(outlink->ch_layout.nb_channels, s->cache_size * sizeof(*s->start_cache));
+    s->stop_cache = av_calloc(outlink->ch_layout.nb_channels, s->cache_size * sizeof(*s->stop_cache));
     if (!s->start_window || !s->stop_window || !s->start_cache || !s->stop_cache)
         return AVERROR(ENOMEM);
 
@@ -233,6 +265,18 @@ static int config_output(AVFilterLink *outlink)
     case D_AVG:
         s->compute_flt = compute_avg_flt;
         s->compute_dbl = compute_avg_dbl;
+        break;
+    case D_DEV:
+        s->compute_flt = compute_dev_flt;
+        s->compute_dbl = compute_dev_dbl;
+        break;
+    case D_PTP:
+        s->compute_flt = compute_ptp_flt;
+        s->compute_dbl = compute_ptp_dbl;
+        break;
+    case D_MEDIAN:
+        s->compute_flt = compute_median_flt;
+        s->compute_dbl = compute_median_dbl;
         break;
     case D_PEAK:
         s->compute_flt = compute_peak_flt;
@@ -280,22 +324,29 @@ static int filter_frame(AVFilterLink *outlink, AVFrame *in)
         return AVERROR(ENOMEM);
     }
 
-    out->pts = s->next_pts;
+    if (s->timestamp_mode == TS_WRITE)
+        out->pts = s->next_pts;
+    else
+        out->pts = in->pts;
 
     switch (outlink->format) {
     case AV_SAMPLE_FMT_FLT:
         srcf = (const float *)in->data[0];
         dstf = (float *)out->data[0];
         if (s->start_periods > 0 && s->stop_periods > 0) {
-            for (int n = 0; n < in_nb_samples; n++) {
-                filter_start_flt(ctx, srcf + n * nb_channels,
-                                 dstf, &out_nb_samples,
-                                 nb_channels);
+            const float *src = srcf;
+            if (s->start_found_periods >= 0) {
+                for (int n = 0; n < in_nb_samples; n++) {
+                    filter_start_flt(ctx, src + n * nb_channels,
+                                     dstf, &out_nb_samples,
+                                     nb_channels);
+                }
+                in_nb_samples = out_nb_samples;
+                out_nb_samples = 0;
+                src = dstf;
             }
-            in_nb_samples = out_nb_samples;
-            out_nb_samples = 0;
             for (int n = 0; n < in_nb_samples; n++) {
-                filter_stop_flt(ctx, dstf + n * nb_channels,
+                filter_stop_flt(ctx, src + n * nb_channels,
                                 dstf, &out_nb_samples,
                                 nb_channels);
             }
@@ -317,15 +368,19 @@ static int filter_frame(AVFilterLink *outlink, AVFrame *in)
         srcd = (const double *)in->data[0];
         dstd = (double *)out->data[0];
         if (s->start_periods > 0 && s->stop_periods > 0) {
-            for (int n = 0; n < in_nb_samples; n++) {
-                filter_start_dbl(ctx, srcd + n * nb_channels,
-                                 dstd, &out_nb_samples,
-                                 nb_channels);
+            const double *src = srcd;
+            if (s->start_found_periods >= 0) {
+                for (int n = 0; n < in_nb_samples; n++) {
+                    filter_start_dbl(ctx, src + n * nb_channels,
+                                     dstd, &out_nb_samples,
+                                     nb_channels);
+                }
+                in_nb_samples = out_nb_samples;
+                out_nb_samples = 0;
+                src = dstd;
             }
-            in_nb_samples = out_nb_samples;
-            out_nb_samples = 0;
             for (int n = 0; n < in_nb_samples; n++) {
-                filter_stop_dbl(ctx, dstd + n * nb_channels,
+                filter_stop_dbl(ctx, src + n * nb_channels,
                                 dstd, &out_nb_samples,
                                 nb_channels);
             }
@@ -374,7 +429,8 @@ static int activate(AVFilterContext *ctx)
     if (ret > 0) {
         if (s->start_periods == 1 && s->stop_periods == 0 &&
             s->start_found_periods < 0) {
-            in->pts = s->next_pts;
+            if (s->timestamp_mode == TS_WRITE)
+                in->pts = s->next_pts;
             s->next_pts += in->nb_samples;
             return ff_filter_frame(outlink, in);
         }
@@ -434,4 +490,6 @@ const AVFilter ff_af_silenceremove = {
     FILTER_OUTPUTS(silenceremove_outputs),
     FILTER_SAMPLEFMTS(AV_SAMPLE_FMT_FLT,
                       AV_SAMPLE_FMT_DBL),
+    .process_command = ff_filter_process_command,
+    .flags           = AVFILTER_FLAG_SUPPORT_TIMELINE_INTERNAL,
 };

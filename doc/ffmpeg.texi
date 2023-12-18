@@ -830,7 +830,7 @@ be achieved with @code{ffmpeg ... < /dev/null} but it requires a
 shell.
 
 @item -debug_ts (@emph{global})
-Print timestamp information. It is off by default. This option is
+Print timestamp/latency information. It is off by default. This option is
 mostly useful for testing and debugging purposes, and the output
 format may change from one version to another, so it should not be
 employed by portable scripts.
@@ -1052,8 +1052,6 @@ Dump video coding statistics to @var{file}. See the
 Specify which version of the vstats format to use. Default is @code{2}. See the
 @ref{vstats_file_format,,vstats file format} section for the format description.
 
-@item -top[:@var{stream_specifier}] @var{n} (@emph{output,per-stream})
-top=1/bottom=0/auto=-1 field first
 @item -vtag @var{fourcc/tag} (@emph{output})
 Force video tag/fourcc. This is an alias for @code{-tag:v}.
 @item -vbsf @var{bitstream_filter}
@@ -1062,7 +1060,6 @@ Deprecated see -bsf
 @item -force_key_frames[:@var{stream_specifier}] @var{time}[,@var{time}...] (@emph{output,per-stream})
 @item -force_key_frames[:@var{stream_specifier}] expr:@var{expr} (@emph{output,per-stream})
 @item -force_key_frames[:@var{stream_specifier}] source (@emph{output,per-stream})
-@item -force_key_frames[:@var{stream_specifier}] source_no_drop (@emph{output,per-stream})
 
 @var{force_key_frames} can take arguments of the following form:
 
@@ -1123,10 +1120,6 @@ starting from second 13:
 @item source
 If the argument is @code{source}, ffmpeg will force a key frame if
 the current frame being encoded is marked as a key frame in its source.
-
-@item source_no_drop
-If the argument is @code{source_no_drop}, ffmpeg will force a key frame if
-the current frame being encoded is marked as a key frame in its source.
 In cases where this particular source frame has to be dropped,
 enforce the next available frame to become a key frame instead.
 
@@ -1172,6 +1165,21 @@ Choose the first device and use the primary device context.
 
 @item d3d11va
 @var{device} is the number of the Direct3D 11 display adapter.
+If not specified, it will attempt to use the default Direct3D 11 display adapter
+or the first Direct3D 11 display adapter whose hardware VendorId is specified
+by @samp{vendor_id}.
+
+Examples:
+@table @emph
+@item -init_hw_device d3d11va
+Create a d3d11va device on the default Direct3D 11 display adapter.
+
+@item -init_hw_device d3d11va:1
+Create a d3d11va device on the Direct3D 11 display adapter specified by index 1.
+
+@item -init_hw_device d3d11va:,vendor_id=0x8086
+Create a d3d11va device on the first Direct3D 11 display adapter whose hardware VendorId is 0x8086.
+@end table
 
 @item vaapi
 @var{device} is either an X11 display name, a DRM render node or a DirectX adapter index.
@@ -1734,9 +1742,6 @@ constant frame rate.
 @item vfr (2)
 Frames are passed through with their timestamp or dropped so as to
 prevent 2 frames from having the same timestamp.
-@item drop
-As passthrough but destroys all timestamps, making the muxer generate
-fresh timestamps based on frame-rate.
 @item auto (-1)
 Chooses between cfr and vfr depending on muxer capabilities. This is the
 default method.
@@ -1803,8 +1808,7 @@ Try to make the choice automatically, in order to generate a sane output.
 Default value is -1.
 
 @item -enc_time_base[:@var{stream_specifier}] @var{timebase} (@emph{output,per-stream})
-Set the encoder timebase. @var{timebase} is a floating point number,
-and can assume one of the following values:
+Set the encoder timebase. @var{timebase} can assume one of the following values:
 
 @table @option
 @item 0
@@ -1812,16 +1816,17 @@ Assign a default value according to the media type.
 
 For video - use 1/framerate, for audio - use 1/samplerate.
 
-@item -1
-Use the input stream timebase when possible.
+@item demux
+Use the timebase from the demuxer.
 
-If an input stream is not available, the default timebase will be used.
+@item filter
+Use the timebase from the filtergraph.
 
-@item >0
+@item a positive number
 Use the provided number as the timebase.
 
 This field can be provided as a ratio of two integers (e.g. 1:24, 1:48000)
-or as a floating point number (e.g. 0.04166, 2.0833e-5)
+or as a decimal number (e.g. 0.04166, 2.0833e-5)
 @end table
 
 Default value is 0.
@@ -1852,8 +1857,8 @@ of seconds.
 
 The timestamp discontinuity correction enabled by this option is only
 applied to input formats accepting timestamp discontinuity (for which
-the @code{AV_FMT_DISCONT} flag is enabled), e.g. MPEG-TS and HLS, and
-is automatically disabled when employing the @code{-copy_ts} option
+the @code{AVFMT_TS_DISCONT} flag is enabled), e.g. MPEG-TS and HLS, and
+is automatically disabled when employing the @code{-copyts} option
 (unless wrapping is detected).
 
 If a timestamp discontinuity is detected whose absolute value is
@@ -1869,7 +1874,7 @@ seconds.
 
 The timestamp correction enabled by this option is only applied to
 input formats not accepting timestamp discontinuity (for which the
-@code{AV_FMT_DISCONT} flag is not enabled).
+@code{AVFMT_TS_DISCONT} flag is not enabled).
 
 If a timestamp discontinuity is detected whose absolute value is
 greater than @var{threshold}, ffmpeg will drop the PTS/DTS timestamp
@@ -1895,9 +1900,19 @@ ffmpeg -i inurl -streamid 0:33 -streamid 1:36 out.ts
 @end example
 
 @item -bsf[:@var{stream_specifier}] @var{bitstream_filters} (@emph{output,per-stream})
-Set bitstream filters for matching streams. @var{bitstream_filters} is
-a comma-separated list of bitstream filters. Use the @code{-bsfs} option
-to get the list of bitstream filters.
+Apply bitstream filters to matching streams.
+
+@var{bitstream_filters} is a comma-separated list of bitstream filter
+specifications. The specified bitstream filters are applied to coded packets in
+the order they are written in. Each bitstream filter specification is of the
+form
+@example
+@var{filter}[=@var{optname0}=@var{optval0}:@var{optname1}=@var{optval1}:...]
+@end example
+Any of the ',=:' characters that are to be a part of an option value need to be
+escaped with a backslash.
+
+Use the @code{-bsfs} option to get the list of bitstream filters.
 @example
 ffmpeg -i h264.mp4 -c:v copy -bsf:v h264_mp4toannexb -an out.h264
 @end example
@@ -2145,8 +2160,8 @@ Input frame number. Index of the input frame (i.e. output by a decoder) that
 corresponds to this output frame or packet. -1 if unavailable.
 
 @item tb
-Encoder timebase, as a rational number @var{num/den}. Note that this may be
-different from the timebase used by the muxer.
+Timebase in which this frame/packet's timestamps are expressed, as a rational
+number @var{num/den}. Note that encoder and muxer may use different timebases.
 
 @item tbi
 Timebase for @var{ptsi}, as a rational number @var{num/den}. Available when
@@ -2169,30 +2184,41 @@ Presentation time of the frame or packet, as a decimal number. Equal to
 Presentation time of the input frame (see @var{ni}), as a decimal number. Equal
 to @var{ptsi} multiplied by @var{tbi}. Printed as inf when not available.
 
-@item dts
+@item dts (@emph{packet})
 Decoding timestamp of the packet, as an integer. Should be multiplied by the
-timebase to compute presentation time. Post-encoding only.
+timebase to compute presentation time.
 
-@item dt
+@item dt (@emph{packet})
 Decoding time of the frame or packet, as a decimal number. Equal to
 @var{dts} multiplied by @var{tb}.
 
-@item sn
-Number of audio samples sent to the encoder so far. Audio and pre-encoding only.
+@item sn (@emph{frame,audio})
+Number of audio samples sent to the encoder so far.
 
-@item samp
-Number of audio samples in the frame. Audio and pre-encoding only.
+@item samp (@emph{frame,audio})
+Number of audio samples in the frame.
 
-@item size
-Size of the encoded packet in bytes. Post-encoding only.
+@item size (@emph{packet})
+Size of the encoded packet in bytes.
 
-@item br
-Current bitrate in bits per second. Post-encoding only.
+@item br (@emph{packet})
+Current bitrate in bits per second.
 
-@item abr
+@item abr (@emph{packet})
 Average bitrate for the whole stream so far, in bits per second, -1 if it cannot
-be determined at this point. Post-encoding only.
+be determined at this point.
+
+@item key (@emph{packet})
+Character 'K' if the packet contains a keyframe, character 'N' otherwise.
 @end table
+
+Directives tagged with @emph{packet} may only be used with
+@option{-stats_enc_post_fmt} and @option{-stats_mux_pre_fmt}.
+
+Directives tagged with @emph{frame} may only be used with
+@option{-stats_enc_pre_fmt}.
+
+Directives tagged with @emph{audio} may only be used with audio streams.
 
 The default format strings are:
 @table @option

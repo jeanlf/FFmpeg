@@ -50,27 +50,6 @@ extern AVDictionary *format_opts, *codec_opts;
 extern int hide_banner;
 
 /**
- * Register a program-specific cleanup routine.
- */
-void register_exit(void (*cb)(int ret));
-
-/**
- * Reports an error corresponding to the provided
- * AVERROR code and calls exit_program() with the
- * corresponding POSIX error code.
- * @note ret must be an AVERROR-value of a POSIX error code
- *       (i.e. AVERROR(EFOO) and not AVERROR_FOO).
- *       library functions can return both, so call this only
- *       with AVERROR(EFOO) of your own.
- */
-void report_and_exit(int ret) av_noreturn;
-
-/**
- * Wraps exit with a program-specific cleanup routine.
- */
-void exit_program(int ret) av_noreturn;
-
-/**
  * Initialize dynamic library loading
  */
 void init_dynload(void);
@@ -100,8 +79,6 @@ int opt_timelimit(void *optctx, const char *opt, const char *arg);
 
 /**
  * Parse a string and return its corresponding value as a double.
- * Exit from the application if the string cannot be correctly
- * parsed or the corresponding value is invalid.
  *
  * @param context the context of the value to be set (e.g. the
  * corresponding command line option name)
@@ -111,25 +88,8 @@ int opt_timelimit(void *optctx, const char *opt, const char *arg);
  * @param min the minimum valid accepted value
  * @param max the maximum valid accepted value
  */
-double parse_number_or_die(const char *context, const char *numstr, int type,
-                           double min, double max);
-
-/**
- * Parse a string specifying a time and return its corresponding
- * value as a number of microseconds. Exit from the application if
- * the string cannot be correctly parsed.
- *
- * @param context the context of the value to be set (e.g. the
- * corresponding command line option name)
- * @param timestr the string to be parsed
- * @param is_duration a flag which tells how to interpret timestr, if
- * not zero timestr is interpreted as a duration, otherwise as a
- * date
- *
- * @see av_parse_time()
- */
-int64_t parse_time_or_die(const char *context, const char *timestr,
-                          int is_duration);
+int parse_number(const char *context, const char *numstr, int type,
+                 double min, double max, double *dst);
 
 typedef struct SpecifierOpt {
     char *specifier;    /**< stream/chapter/program/... specifier */
@@ -146,28 +106,31 @@ typedef struct SpecifierOpt {
 typedef struct OptionDef {
     const char *name;
     int flags;
-#define HAS_ARG    0x0001
-#define OPT_BOOL   0x0002
-#define OPT_EXPERT 0x0004
-#define OPT_STRING 0x0008
-#define OPT_VIDEO  0x0010
-#define OPT_AUDIO  0x0020
-#define OPT_INT    0x0080
-#define OPT_FLOAT  0x0100
-#define OPT_SUBTITLE 0x0200
-#define OPT_INT64  0x0400
-#define OPT_EXIT   0x0800
-#define OPT_DATA   0x1000
-#define OPT_PERFILE  0x2000     /* the option is per-file (currently ffmpeg-only).
-                                   implied by OPT_OFFSET or OPT_SPEC */
-#define OPT_OFFSET 0x4000       /* option is specified as an offset in a passed optctx */
-#define OPT_SPEC   0x8000       /* option is to be stored in an array of SpecifierOpt.
-                                   Implies OPT_OFFSET. Next element after the offset is
-                                   an int containing element count in the array. */
-#define OPT_TIME  0x10000
-#define OPT_DOUBLE 0x20000
-#define OPT_INPUT  0x40000
-#define OPT_OUTPUT 0x80000
+#define HAS_ARG         (1 << 0)
+#define OPT_BOOL        (1 << 1)
+#define OPT_EXPERT      (1 << 2)
+#define OPT_STRING      (1 << 3)
+#define OPT_VIDEO       (1 << 4)
+#define OPT_AUDIO       (1 << 5)
+#define OPT_INT         (1 << 6)
+#define OPT_FLOAT       (1 << 7)
+#define OPT_SUBTITLE    (1 << 8)
+#define OPT_INT64       (1 << 9)
+#define OPT_EXIT        (1 << 10)
+#define OPT_DATA        (1 << 11)
+/* The option is per-file (currently ffmpeg-only).
+   implied by OPT_OFFSET or OPT_SPEC */
+#define OPT_PERFILE     (1 << 12)
+/* Option is specified as an offset in a passed optctx */
+#define OPT_OFFSET      (1 << 13)
+/* Option is to be stored in an array of SpecifierOpt. Implies OPT_OFFSET.
+   Next element after the offset is an int containing element count in the
+   array. */
+#define OPT_SPEC        (1 << 14)
+#define OPT_TIME        (1 << 15)
+#define OPT_DOUBLE      (1 << 16)
+#define OPT_INPUT       (1 << 17)
+#define OPT_OUTPUT      (1 << 18)
      union {
         void *dst_ptr;
         int (*func_arg)(void *, const char *, const char *);
@@ -213,8 +176,8 @@ void show_help_default(const char *opt, const char *arg);
  * argument without a leading option name flag. NULL if such arguments do
  * not have to be processed.
  */
-void parse_options(void *optctx, int argc, char **argv, const OptionDef *options,
-                   void (* parse_arg_function)(void *optctx, const char*));
+int parse_options(void *optctx, int argc, char **argv, const OptionDef *options,
+                  int (* parse_arg_function)(void *optctx, const char*));
 
 /**
  * Parse one given option.
@@ -352,10 +315,12 @@ int check_stream_specifier(AVFormatContext *s, AVStream *st, const char *spec);
  * @param st A stream from s for which the options should be filtered.
  * @param codec The particular codec for which the options should be filtered.
  *              If null, the default one is looked up according to the codec id.
- * @return a pointer to the created dictionary
+ * @param dst a pointer to the created dictionary
+ * @return a non-negative number on success, a negative error code on failure
  */
-AVDictionary *filter_codec_opts(AVDictionary *opts, enum AVCodecID codec_id,
-                                AVFormatContext *s, AVStream *st, const AVCodec *codec);
+int filter_codec_opts(const AVDictionary *opts, enum AVCodecID codec_id,
+                      AVFormatContext *s, AVStream *st, const AVCodec *codec,
+                      AVDictionary **dst);
 
 /**
  * Setup AVCodecContext options for avformat_find_stream_info().
@@ -364,12 +329,10 @@ AVDictionary *filter_codec_opts(AVDictionary *opts, enum AVCodecID codec_id,
  * contained in s.
  * Each dictionary will contain the options from codec_opts which can
  * be applied to the corresponding stream codec context.
- *
- * @return pointer to the created array of dictionaries.
- * Calls exit() on failure.
  */
-AVDictionary **setup_find_stream_info_opts(AVFormatContext *s,
-                                           AVDictionary *codec_opts);
+int setup_find_stream_info_opts(AVFormatContext *s,
+                                AVDictionary *codec_opts,
+                                AVDictionary ***dst);
 
 /**
  * Print an error message to stderr, indicating filename and a human
@@ -418,35 +381,31 @@ FILE *get_preset_file(char *filename, size_t filename_size,
 
 /**
  * Realloc array to hold new_size elements of elem_size.
- * Calls exit() on failure.
  *
- * @param array array to reallocate
+ * @param array pointer to the array to reallocate, will be updated
+ *              with a new pointer on success
  * @param elem_size size in bytes of each element
  * @param size new element count will be written here
  * @param new_size number of elements to place in reallocated array
- * @return reallocated array
+ * @return a non-negative number on success, a negative error code on failure
  */
-void *grow_array(void *array, int elem_size, int *size, int new_size);
+int grow_array(void **array, int elem_size, int *size, int new_size);
 
 /**
  * Atomically add a new element to an array of pointers, i.e. allocate
  * a new entry, reallocate the array of pointers and make the new last
  * member of this array point to the newly allocated buffer.
- * Calls exit() on failure.
  *
  * @param array     array of pointers to reallocate
  * @param elem_size size of the new element to allocate
  * @param nb_elems  pointer to the number of elements of the array array;
  *                  *nb_elems will be incremented by one by this function.
- * @return pointer to the newly allocated entry
+ * @return pointer to the newly allocated entry or NULL on failure
  */
 void *allocate_array_elem(void *array, size_t elem_size, int *nb_elems);
 
 #define GROW_ARRAY(array, nb_elems)\
-    array = grow_array(array, sizeof(*array), &nb_elems, nb_elems + 1)
-
-#define ALLOC_ARRAY_ELEM(array, nb_elems)\
-    allocate_array_elem(&array, sizeof(*array[0]), &nb_elems)
+    grow_array((void**)&array, sizeof(*array), &nb_elems, nb_elems + 1)
 
 #define GET_PIX_FMT_NAME(pix_fmt)\
     const char *name = av_get_pix_fmt_name(pix_fmt);
