@@ -331,6 +331,9 @@ static av_cold int ff_vvdec_decode_init(AVCodecContext *avctx)
 
     ff_vvdec_printParameterInfo(avctx, &s->vvdecParams);
 
+	//force lowest frame parsing delay to avoid keeping too many frames internally
+	s->vvdecParams.parseThreads = 0;
+
     // using buffer allocation by using AVBufferPool
     s->vvdecParams.opaque = avctx->priv_data;
     s->vvdecDec = vvdec_decoder_open_with_allocator(&s->vvdecParams,
