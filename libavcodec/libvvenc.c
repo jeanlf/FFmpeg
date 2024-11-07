@@ -40,6 +40,7 @@
 #include "libavutil/imgutils.h"
 #include "libavutil/frame.h"
 #include "libavutil/log.h"
+#include "libavutil/mem.h"
 
 typedef struct VVenCOptions {
     int preset;                 // preset 0: faster  4: slower

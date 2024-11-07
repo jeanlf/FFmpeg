@@ -32,6 +32,7 @@
 
 #include "libavutil/attributes.h"
 #include "libavutil/internal.h"
+#include "libavutil/mem.h"
 #include "libavutil/mem_internal.h"
 
 #include "audiodsp.h"
@@ -222,6 +223,8 @@ static void apply_channel_coupling(AC3EncodeContext *s)
             }
         }
     }
+
+    av_assert1(s->fbw_channels > 0);
 
     /* calculate final coupling coordinates, taking into account reusing of
        coordinates in successive blocks */

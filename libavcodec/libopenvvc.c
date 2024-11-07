@@ -27,6 +27,7 @@
 
 #include "libavutil/attributes.h"
 #include "libavutil/opt.h"
+#include "libavutil/mem.h"
 
 #include "avcodec.h"
 #include "profiles.h"
