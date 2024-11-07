@@ -81,6 +81,7 @@ typedef void ID3D11Device;
 // SDK 12.1 compile time feature checks
 #if NVENCAPI_CHECK_VERSION(12, 1)
 #define NVENC_NO_DEPRECATED_RC
+#define NVENC_HAVE_SPLIT_FRAME_ENCODING
 #endif
 
 // SDK 12.2 compile time feature checks
@@ -205,6 +206,9 @@ typedef struct NvencContext
     AVFifo *output_surface_queue;
     AVFifo *output_surface_ready_queue;
     AVFifo *timestamp_list;
+    // This is for DTS calculating, reset after flush
+    uint64_t output_frame_num;
+    int64_t initial_delay_time;
 
     NV_ENC_SEI_PAYLOAD *sei_data;
     int sei_data_size;
@@ -280,6 +284,7 @@ typedef struct NvencContext
     int tf_level;
     int lookahead_level;
     int unidir_b;
+    int split_encode_mode;
 } NvencContext;
 
 int ff_nvenc_encode_init(AVCodecContext *avctx);

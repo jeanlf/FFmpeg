@@ -207,8 +207,9 @@ static int libovvc_decode_frame(AVCodecContext *c, AVFrame *outdata, int *outdat
         av_log(c, AV_LOG_WARNING, "Unsupported side data\n");
     }
 
-    ret = ff_h2645_packet_split(&pkt, avpkt->data, avpkt->size, c, dec_ctx->is_nalff,
-                                dec_ctx->nal_length_size, AV_CODEC_ID_VVC, 0, 0);
+    ret = ff_h2645_packet_split(&pkt, avpkt->data, avpkt->size, c,
+                                dec_ctx->nal_length_size, AV_CODEC_ID_VVC, 0);
+
     if (ret < 0) {
         av_log(c, AV_LOG_ERROR, "Error splitting the input into NAL units.\n");
         return ret;
