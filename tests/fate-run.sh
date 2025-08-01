@@ -98,6 +98,10 @@ probefmt(){
     run ffprobe${PROGSUF}${EXECSUF} -bitexact -show_entries format=format_name -print_format default=nw=1:nk=1 "$@"
 }
 
+probecodec(){
+    run ffprobe${PROGSUF}${EXECSUF} -bitexact -show_entries stream=codec_name -print_format default=nw=1:nk=1 "$@"
+}
+
 probeaudiostream(){
     run ffprobe${PROGSUF}${EXECSUF} -bitexact -show_entries stream=codec_name,codec_time_base,sample_fmt,channels,channel_layout:side_data "$@"
 }
@@ -117,6 +121,10 @@ probeframes(){
 
 probechapters(){
     run ffprobe${PROGSUF}${EXECSUF} -bitexact -show_chapters "$@"
+}
+
+probe(){
+    run ffprobe${PROGSUF}${EXECSUF} -bitexact "$@"
 }
 
 probegaplessinfo(){
@@ -318,6 +326,7 @@ enc_external(){
 
     srcfile=$(target_path $srcfile)
     encfile=$(target_path "${outdir}/${test}.${enc_fmt}")
+    test "$keep" -ge 1 || cleanfiles="$cleanfiles $encfile"
 
     ffmpeg -i $srcfile $enc_opt -f $enc_fmt -y $encfile || return
     run ffprobe${PROGSUF}${EXECSUF} -bitexact $probe_opt $encfile || return
@@ -402,8 +411,8 @@ lavf_container_fate()
     cleanfiles="$cleanfiles $file"
     input="${target_samples}/$1"
     do_avconv $file -auto_conversion_filters $DEC_OPTS $2 -i "$input" \
-              "$ENC_OPTS -metadata title=lavftest" -vcodec copy -acodec copy || return
-    do_avconv_crc $file -auto_conversion_filters $DEC_OPTS -i $target_path/$file $3
+              "$ENC_OPTS -metadata title=lavftest" $3 -vcodec copy -acodec copy || return
+    do_avconv_crc $file -auto_conversion_filters $DEC_OPTS -i $target_path/$file $4
 }
 
 lavf_image(){
@@ -513,7 +522,7 @@ pixfmt_conversion_ext(){
     outdir="tests/data/pixfmt"
     file=${outdir}/${color_range}-${conversion}.yuv
     cleanfiles="$cleanfiles $file"
-    do_avconv $file $DEC_OPTS -lavfi ${prefix}testsrc=s=352x288,format=${color_range},scale=flags=$SCALE_FLAGS,format=$conversion \
+    do_avconv $file $DEC_OPTS -lavfi ${prefix}testsrc=s=352x288,format=${color_range},scale=flags=$SCALE_FLAGS:sws_dither=none,format=$conversion \
               $ENC_OPTS -t 1 -f rawvideo -s 352x288 -pix_fmt ${color_range}${suffix} -color_range mpeg
 }
 

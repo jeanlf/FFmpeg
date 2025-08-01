@@ -655,6 +655,7 @@ fail:
 static int render_default_font(AVFrame *tmp)
 {
     const char *str = "EF G A BC D ";
+    const uint8_t *vga16_font = avpriv_vga16_font_get();
     int x, u, v, mask;
     uint8_t *data = tmp->data[0];
     int linesize = tmp->linesize[0];
@@ -666,7 +667,7 @@ static int render_default_font(AVFrame *tmp)
             for (v = 0; v < height; v++) {
                 uint8_t *p = startptr + v * linesize + height/2 * 4 * u;
                 for (mask = 0x80; mask; mask >>= 1, p += 4) {
-                    if (mask & avpriv_vga16_font[str[u] * 16 + v])
+                    if (mask & vga16_font[str[u] * 16 + v])
                         p[3] = 255;
                     else
                         p[3] = 0;
@@ -1598,9 +1599,10 @@ static const AVFilterPad showcqt_outputs[] = {
     },
 };
 
-const AVFilter ff_avf_showcqt = {
-    .name          = "showcqt",
-    .description   = NULL_IF_CONFIG_SMALL("Convert input audio to a CQT (Constant/Clamped Q Transform) spectrum video output."),
+const FFFilter ff_avf_showcqt = {
+    .p.name        = "showcqt",
+    .p.description = NULL_IF_CONFIG_SMALL("Convert input audio to a CQT (Constant/Clamped Q Transform) spectrum video output."),
+    .p.priv_class  = &showcqt_class,
     .init          = init,
     .activate      = activate,
     .uninit        = uninit,
@@ -1608,5 +1610,4 @@ const AVFilter ff_avf_showcqt = {
     FILTER_INPUTS(ff_audio_default_filterpad),
     FILTER_OUTPUTS(showcqt_outputs),
     FILTER_QUERY_FUNC2(query_formats),
-    .priv_class    = &showcqt_class,
 };
