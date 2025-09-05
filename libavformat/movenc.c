@@ -872,7 +872,7 @@ static int mov_write_dops_tag(AVFormatContext *s, AVIOContext *pb, MOVTrack *tra
         return AVERROR_INVALIDDATA;
     }
     /* extradata contains an Ogg OpusHead, other than byte-ordering and
-       OpusHead's preceeding magic/version, OpusSpecificBox is currently
+       OpusHead's preceding magic/version, OpusSpecificBox is currently
        identical. */
     channels = AV_RB8(track->extradata[track->last_stsd_index] + 9);
     channel_map = AV_RB8(track->extradata[track->last_stsd_index] + 18);
@@ -1879,6 +1879,10 @@ static int mov_get_h264_codec_tag(AVFormatContext *s, MOVTrack *track)
 
     if (!tag)
         tag = MKTAG('a', 'v', 'c', 'i'); //fallback tag
+
+    if (track->par->profile == AV_PROFILE_UNKNOWN ||
+        !(track->par->profile & AV_PROFILE_H264_INTRA))
+        return tag;
 
     if (track->par->format == AV_PIX_FMT_YUV420P10) {
         if (track->par->width == 960 && track->par->height == 720) {
@@ -3226,7 +3230,7 @@ static int mov_preroll_write_stbl_atoms(AVIOContext *pb, MOVTrack *track)
                 if (roll_samples_remaining <= 0)
                     break;
             }
-            /* We don't have enough preceeding samples to compute a valid
+            /* We don't have enough preceding samples to compute a valid
                roll_distance here, so this sample can't be independently
                decoded. */
             if (roll_samples_remaining > 0)
@@ -5180,7 +5184,11 @@ static int mov_write_moov_tag(AVIOContext *pb, MOVMuxContext *mov,
                 return ret;
         }
     }
-    if (mov->flags & FF_MOV_FLAG_FRAGMENT)
+    /* Don't write mvex for hybrid_fragmented during mov_write_trailer
+     * (mov->moov_written != 0)
+     */
+    if (mov->flags & FF_MOV_FLAG_FRAGMENT &&
+        !(mov->flags & FF_MOV_FLAG_HYBRID_FRAGMENTED && mov->moov_written))
         mov_write_mvex_tag(pb, mov); /* QuickTime requires trak to precede this */
 
     if (mov->mode == MODE_PSP)
@@ -7321,7 +7329,7 @@ static int mov_write_packet(AVFormatContext *s, AVPacket *pkt)
         /*
          * Subtitles require special handling.
          *
-         * 1) For full complaince, every track must have a sample at
+         * 1) For full compliance, every track must have a sample at
          * dts == 0, which is rarely true for subtitles. So, as soon
          * as we see any packet with dts > 0, write an empty subtitle
          * at dts == 0 for any subtitle track with no samples in it.
@@ -7459,6 +7467,14 @@ static int mov_create_chapter_track(AVFormatContext *s, int tracknum)
     if (ret < 0)
         return ret;
     memcpy(track->par->extradata, stub_header, sizeof(stub_header));
+
+    if (track->extradata == NULL) {
+        track->stsd_count     = 1;
+        track->extradata      = av_calloc(1, sizeof(*track->extradata));
+        track->extradata_size = av_calloc(1, sizeof(*track->extradata_size));
+        if (!track->extradata || !track->extradata_size)
+            return AVERROR(ENOMEM);
+    }
 
     track->extradata[0] = av_memdup(stub_header, sizeof(stub_header));
     if (!track->extradata[0])
