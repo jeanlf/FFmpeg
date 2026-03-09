@@ -20,6 +20,7 @@
  */
 
 #include "libavutil/avassert.h"
+#include "libavutil/bprint.h"
 #include "libavutil/channel_layout.h"
 #include "libavutil/common.h"
 #include "libavutil/mem.h"
@@ -345,6 +346,39 @@ static int merge_generic(void *a, void *b)
     return merge_generic_internal(a, b, 0);
 }
 
+#define PRINT_NAME(type, type_name)                                             \
+static void print_##type_name(AVBPrint *bp, const void *fmtsp)                  \
+{                                                                               \
+    const AVFilterFormats *fmts = fmtsp;                                        \
+    for (int i = 0; i < fmts->nb_formats; i++) {                                \
+        const char *name = av_##type_name(fmts->formats[i]);                    \
+        av_bprint_chars(bp, ' ', i ? 1 : 0);                                    \
+        av_bprint_append_data(bp, name, name ? strlen(name) : 0);               \
+    }                                                                           \
+}
+
+PRINT_NAME(enum AVSampleFormat, get_sample_fmt_name)
+PRINT_NAME(enum AVPixelFormat,  get_pix_fmt_name)
+PRINT_NAME(enum AVColorSpace,   color_space_name)
+PRINT_NAME(enum AVColorRange,   color_range_name)
+PRINT_NAME(enum AVAlphaMode,    alpha_mode_name)
+
+static void print_channel_layout_desc(AVBPrint *bp, const void *layoutsp)
+{
+    const AVFilterChannelLayouts *layouts = layoutsp;
+    for (int i = 0; i < layouts->nb_channel_layouts; i++) {
+        av_bprint_chars(bp, ' ', i ? 1 : 0);
+        av_channel_layout_describe_bprint(&layouts->channel_layouts[i], bp);
+    }
+}
+
+static void print_sample_rate(AVBPrint *bp, const void *ratesp)
+{
+    const AVFilterFormats *rates = ratesp;
+    for (int i = 0; i < rates->nb_formats; i++)
+        av_bprintf(bp, "%s%d", i ? " " : "", rates->formats[i]);
+}
+
 #define CONVERSION_FILTER_SWSCALE \
     .conversion_filter = "scale", \
     .conversion_opts_offset = offsetof(AVFilterGraph, scale_sws_opts),
@@ -355,48 +389,62 @@ static int merge_generic(void *a, void *b)
 
 static const AVFilterFormatsMerger mergers_video[] = {
     {
+        .name       = "Pixel formats",
         .offset     = offsetof(AVFilterFormatsConfig, formats),
         .merge      = merge_pix_fmts,
         .can_merge  = can_merge_pix_fmts,
+        .print_list = print_get_pix_fmt_name,
         CONVERSION_FILTER_SWSCALE
     },
     {
+        .name       = "Color spaces",
         .offset     = offsetof(AVFilterFormatsConfig, color_spaces),
         .merge      = merge_generic,
         .can_merge  = can_merge_generic,
+        .print_list = print_color_space_name,
         CONVERSION_FILTER_SWSCALE
     },
     {
+        .name       = "Color ranges",
         .offset     = offsetof(AVFilterFormatsConfig, color_ranges),
         .merge      = merge_generic,
         .can_merge  = can_merge_generic,
+        .print_list = print_color_range_name,
         CONVERSION_FILTER_SWSCALE
     },
     {
+        .name       = "Alpha modes",
         .offset     = offsetof(AVFilterFormatsConfig, alpha_modes),
         .merge      = merge_generic,
         .can_merge  = can_merge_generic,
+        .print_list = print_alpha_mode_name,
         .conversion_filter = "premultiply_dynamic",
     },
 };
 
 static const AVFilterFormatsMerger mergers_audio[] = {
     {
+        .name       = "Channel layouts",
         .offset     = offsetof(AVFilterFormatsConfig, channel_layouts),
         .merge      = merge_channel_layouts,
         .can_merge  = can_merge_channel_layouts,
+        .print_list = print_channel_layout_desc,
         CONVERSION_FILTER_ARESAMPLE
     },
     {
+        .name       = "Sample rates",
         .offset     = offsetof(AVFilterFormatsConfig, samplerates),
         .merge      = merge_samplerates,
         .can_merge  = can_merge_samplerates,
+        .print_list = print_sample_rate,
         CONVERSION_FILTER_ARESAMPLE
     },
     {
+        .name       = "Sample formats",
         .offset     = offsetof(AVFilterFormatsConfig, formats),
         .merge      = merge_sample_fmts,
         .can_merge  = can_merge_sample_fmts,
+        .print_list = print_get_sample_fmt_name,
         CONVERSION_FILTER_ARESAMPLE
     },
 };
@@ -411,7 +459,7 @@ static const AVFilterNegotiation negotiate_audio = {
     .mergers = mergers_audio,
 };
 
-const AVFilterNegotiation *ff_filter_get_negotiation(AVFilterLink *link)
+const AVFilterNegotiation *ff_filter_get_negotiation(const AVFilterLink *link)
 {
     switch (link->type) {
     case AVMEDIA_TYPE_VIDEO: return &negotiate_video;
@@ -420,12 +468,10 @@ const AVFilterNegotiation *ff_filter_get_negotiation(AVFilterLink *link)
     }
 }
 
-int ff_fmt_is_in(int fmt, const int *fmts)
+int ff_pixfmt_is_in(enum AVPixelFormat fmt, const enum AVPixelFormat *fmts)
 {
-    const int *p;
-
-    for (p = fmts; *p != -1; p++) {
-        if (fmt == *p)
+    for (; *fmts != AV_PIX_FMT_NONE; ++fmts) {
+        if (fmt == *fmts)
             return 1;
     }
     return 0;
@@ -449,14 +495,18 @@ int ff_fmt_is_in(int fmt, const int *fmts)
         }                                                               \
     }
 
-AVFilterFormats *ff_make_format_list(const int *fmts)
-{
-    MAKE_FORMAT_LIST(AVFilterFormats, formats, nb_formats);
-    while (count--)
-        formats->formats[count] = fmts[count];
+#define MAKE_FORMAT_LIST_TYPE(name, type)                           \
+    AVFilterFormats *ff_make_ ## name ## _list(const type* fmts)    \
+    {                                                               \
+        MAKE_FORMAT_LIST(AVFilterFormats, formats, nb_formats);     \
+        while (count--)                                             \
+            formats->formats[count] = (int)fmts[count];             \
+        return formats;                                             \
+    }
 
-    return formats;
-}
+MAKE_FORMAT_LIST_TYPE(format, int)
+MAKE_FORMAT_LIST_TYPE(sample_format, enum AVSampleFormat)
+MAKE_FORMAT_LIST_TYPE(pixel_format, enum AVPixelFormat)
 
 AVFilterChannelLayouts *ff_make_channel_layout_list(const AVChannelLayout *fmts)
 {
@@ -688,7 +738,7 @@ AVFilterFormats *ff_all_alpha_modes(void)
     if (!f)                                                                     \
         return AVERROR(ENOMEM);                                                 \
                                                                                 \
-    tmp = av_realloc_array(f->refs, sizeof(*f->refs), f->refcount + 1);         \
+    tmp = av_realloc_array(f->refs, f->refcount + 1, sizeof(*f->refs));         \
     if (!tmp) {                                                                 \
         unref_fn(&f);                                                           \
         return AVERROR(ENOMEM);                                                 \
@@ -921,6 +971,16 @@ int ff_set_common_formats_from_list(AVFilterContext *ctx, const int *fmts)
     return ff_set_common_formats(ctx, ff_make_format_list(fmts));
 }
 
+int ff_set_sample_formats_from_list(AVFilterContext *ctx, const enum AVSampleFormat *fmts)
+{
+    return ff_set_common_formats(ctx, ff_make_sample_format_list(fmts));
+}
+
+int ff_set_pixel_formats_from_list(AVFilterContext *ctx, const enum AVPixelFormat *fmts)
+{
+    return ff_set_common_formats(ctx, ff_make_pixel_format_list(fmts));
+}
+
 #define SET_COMMON_FORMATS2(ctx, cfg_in, cfg_out, fmts, media_type, \
                             ref_fn, unref_fn)                       \
     if (!fmts)                                                      \
@@ -1091,6 +1151,21 @@ int ff_set_common_formats_from_list2(const AVFilterContext *ctx,
     return ff_set_common_formats2(ctx, cfg_in, cfg_out, ff_make_format_list(fmts));
 }
 
+int ff_set_sample_formats_from_list2(const AVFilterContext *ctx,
+                                     AVFilterFormatsConfig **cfg_in,
+                                     AVFilterFormatsConfig **cfg_out,
+                                     const enum AVSampleFormat *fmts)
+{
+    return ff_set_common_formats2(ctx, cfg_in, cfg_out, ff_make_sample_format_list(fmts));
+}
+
+int ff_set_pixel_formats_from_list2(const AVFilterContext *ctx,
+                                    AVFilterFormatsConfig **cfg_in,
+                                    AVFilterFormatsConfig **cfg_out,
+                                    const enum AVPixelFormat *fmts)
+{
+    return ff_set_common_formats2(ctx, cfg_in, cfg_out, ff_make_pixel_format_list(fmts));
+}
 
 int ff_default_query_formats(AVFilterContext *ctx)
 {
@@ -1102,11 +1177,11 @@ int ff_default_query_formats(AVFilterContext *ctx)
     switch (f->formats_state) {
     case FF_FILTER_FORMATS_PIXFMT_LIST:
         type    = AVMEDIA_TYPE_VIDEO;
-        formats = ff_make_format_list(f->formats.pixels_list);
+        formats = ff_make_pixel_format_list(f->formats.pixels_list);
         break;
     case FF_FILTER_FORMATS_SAMPLEFMTS_LIST:
         type    = AVMEDIA_TYPE_AUDIO;
-        formats = ff_make_format_list(f->formats.samples_list);
+        formats = ff_make_sample_format_list(f->formats.samples_list);
         break;
     case FF_FILTER_FORMATS_SINGLE_PIXFMT:
         type    = AVMEDIA_TYPE_VIDEO;

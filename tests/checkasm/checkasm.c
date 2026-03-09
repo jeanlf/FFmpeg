@@ -115,6 +115,9 @@ static const struct {
     const char *name;
     void (*func)(void);
 } tests[] = {
+    /* NOTE: When adding a new test to this list here, it also needs to be
+     * added in tests/fate/checkasm.mak, otherwise it doesn't get executed
+     * as part of "make fate" or "make fate-checkasm". */
 #if CONFIG_AVCODEC
     #if CONFIG_AAC_DECODER
         { "aacpsdsp", checkasm_check_aacpsdsp },
@@ -141,7 +144,11 @@ static const struct {
     #if CONFIG_BSWAPDSP
         { "bswapdsp", checkasm_check_bswapdsp },
     #endif
+    #if CONFIG_CAVS_DECODER
+        { "cavsdsp", checkasm_check_cavsdsp },
+    #endif
     #if CONFIG_DCA_DECODER
+        { "dcadsp", checkasm_check_dcadsp },
         { "synth_filter", checkasm_check_synth_filter },
     #endif
     #if CONFIG_DIRAC_DECODER
@@ -180,12 +187,19 @@ static const struct {
     #if CONFIG_HEVC_DECODER
         { "hevc_add_res", checkasm_check_hevc_add_res },
         { "hevc_deblock", checkasm_check_hevc_deblock },
+        { "hevc_dequant", checkasm_check_hevc_dequant },
         { "hevc_idct", checkasm_check_hevc_idct },
         { "hevc_pel", checkasm_check_hevc_pel },
         { "hevc_sao", checkasm_check_hevc_sao },
     #endif
-    #if CONFIG_HUFFYUV_DECODER
+    #if CONFIG_HPELDSP
+        { "hpeldsp", checkasm_check_hpeldsp },
+    #endif
+    #if CONFIG_HUFFYUVDSP
         { "huffyuvdsp", checkasm_check_huffyuvdsp },
+    #endif
+    #if CONFIG_HUFFYUVENCDSP
+        { "huffyuvencdsp", checkasm_check_huffyuvencdsp },
     #endif
     #if CONFIG_IDCTDSP
         { "idctdsp", checkasm_check_idctdsp },
@@ -200,13 +214,16 @@ static const struct {
         { "llviddsp", checkasm_check_llviddsp },
     #endif
     #if CONFIG_LLVIDENCDSP
-        { "llviddspenc", checkasm_check_llviddspenc },
+        { "llvidencdsp", checkasm_check_llvidencdsp },
     #endif
     #if CONFIG_LPC
         { "lpc", checkasm_check_lpc },
     #endif
     #if CONFIG_ME_CMP
         { "motion", checkasm_check_motion },
+    #endif
+    #if CONFIG_MPEGVIDEO
+        { "mpegvideo_unquantize", checkasm_check_mpegvideo_unquantize },
     #endif
     #if CONFIG_MPEGVIDEOENCDSP
         { "mpegvideoencdsp", checkasm_check_mpegvideoencdsp },
@@ -216,6 +233,12 @@ static const struct {
     #endif
     #if CONFIG_PIXBLOCKDSP
         { "pixblockdsp", checkasm_check_pixblockdsp },
+    #endif
+    #if CONFIG_PNG_DECODER
+        { "png", checkasm_check_png },
+    #endif
+    #if CONFIG_QPELDSP
+        { "qpeldsp", checkasm_check_qpeldsp },
     #endif
     #if CONFIG_RV34DSP
         { "rv34dsp", checkasm_check_rv34dsp },
@@ -241,11 +264,21 @@ static const struct {
     #if CONFIG_VC1DSP
         { "vc1dsp", checkasm_check_vc1dsp },
     #endif
+    #if CONFIG_VP3DSP
+        { "vp3dsp", checkasm_check_vp3dsp },
+    #endif
+    #if CONFIG_VP6_DECODER
+        { "vp6dsp", checkasm_check_vp6dsp },
+    #endif
     #if CONFIG_VP8DSP
         { "vp8dsp", checkasm_check_vp8dsp },
     #endif
     #if CONFIG_VP9_DECODER
-        { "vp9dsp", checkasm_check_vp9dsp },
+        { "vp9dsp", checkasm_check_vp9dsp }, // all of the below
+        { "vp9_ipred", checkasm_check_vp9_ipred },
+        { "vp9_itxfm", checkasm_check_vp9_itxfm },
+        { "vp9_loopfilter", checkasm_check_vp9_loopfilter },
+        { "vp9_mc", checkasm_check_vp9_mc },
     #endif
     #if CONFIG_VIDEODSP
         { "videodsp", checkasm_check_videodsp },
@@ -284,11 +317,17 @@ static const struct {
     #if CONFIG_EQ_FILTER
         { "vf_eq", checkasm_check_vf_eq },
     #endif
+    #if CONFIG_FSPP_FILTER
+        { "vf_fspp", checkasm_check_vf_fspp },
+    #endif
     #if CONFIG_GBLUR_FILTER
         { "vf_gblur", checkasm_check_vf_gblur },
     #endif
     #if CONFIG_HFLIP_FILTER
         { "vf_hflip", checkasm_check_vf_hflip },
+    #endif
+    #if CONFIG_IDET_FILTER
+        { "vf_idet", checkasm_check_idet },
     #endif
     #if CONFIG_NLMEANS_FILTER
         { "vf_nlmeans", checkasm_check_nlmeans },
@@ -305,18 +344,26 @@ static const struct {
     { "sw_range_convert", checkasm_check_sw_range_convert },
     { "sw_rgb", checkasm_check_sw_rgb },
     { "sw_scale", checkasm_check_sw_scale },
+    { "sw_xyz2rgb", checkasm_check_sw_xyz2rgb },
     { "sw_yuv2rgb", checkasm_check_sw_yuv2rgb },
     { "sw_yuv2yuv", checkasm_check_sw_yuv2yuv },
     { "sw_ops", checkasm_check_sw_ops },
 #endif
 #if CONFIG_AVUTIL
         { "aes",       checkasm_check_aes },
+        { "crc",       checkasm_check_crc },
         { "fixed_dsp", checkasm_check_fixed_dsp },
         { "float_dsp", checkasm_check_float_dsp },
         { "lls",       checkasm_check_lls },
+#if CONFIG_PIXELUTILS
+        { "pixelutils",checkasm_check_pixelutils },
+#endif
         { "av_tx",     checkasm_check_av_tx },
 #endif
     { NULL }
+    /* NOTE: When adding a new test to this list here, it also needs to be
+     * added in tests/fate/checkasm.mak, otherwise it doesn't get executed
+     * as part of "make fate" or "make fate-checkasm". */
 };
 
 /* List of cpu flags to check */
@@ -332,6 +379,10 @@ static const struct {
     { "I8MM",     "i8mm",     AV_CPU_FLAG_I8MM },
     { "SVE",      "sve",      AV_CPU_FLAG_SVE },
     { "SVE2",     "sve2",     AV_CPU_FLAG_SVE2 },
+    { "SME",      "sme",      AV_CPU_FLAG_SME },
+    { "SME-I16I64", "sme_i16i64", AV_CPU_FLAG_SME_I16I64 },
+    { "CRC",      "crc",      AV_CPU_FLAG_ARM_CRC },
+    { "SME2",     "sme2",      AV_CPU_FLAG_SME2 },
 #elif ARCH_ARM
     { "ARMV5TE",  "armv5te",  AV_CPU_FLAG_ARMV5TE },
     { "ARMV6",    "armv6",    AV_CPU_FLAG_ARMV6 },
@@ -360,8 +411,6 @@ static const struct {
 #elif ARCH_X86
     { "MMX",        "mmx",       AV_CPU_FLAG_MMX|AV_CPU_FLAG_CMOV },
     { "MMXEXT",     "mmxext",    AV_CPU_FLAG_MMXEXT },
-    { "3DNOW",      "3dnow",     AV_CPU_FLAG_3DNOW },
-    { "3DNOWEXT",   "3dnowext",  AV_CPU_FLAG_3DNOWEXT },
     { "SSE",        "sse",       AV_CPU_FLAG_SSE },
     { "SSE2",       "sse2",      AV_CPU_FLAG_SSE2|AV_CPU_FLAG_SSE2SLOW },
     { "SSE3",       "sse3",      AV_CPU_FLAG_SSE3|AV_CPU_FLAG_SSE3SLOW },
@@ -369,6 +418,7 @@ static const struct {
     { "SSE4.1",     "sse4",      AV_CPU_FLAG_SSE4 },
     { "SSE4.2",     "sse42",     AV_CPU_FLAG_SSE42 },
     { "AES-NI",     "aesni",     AV_CPU_FLAG_AESNI },
+    { "CLMUL",      "clmul",     AV_CPU_FLAG_CLMUL },
     { "AVX",        "avx",       AV_CPU_FLAG_AVX },
     { "XOP",        "xop",       AV_CPU_FLAG_XOP },
     { "FMA3",       "fma3",      AV_CPU_FLAG_FMA3 },
@@ -1011,7 +1061,13 @@ int main(int argc, char *argv[])
     if (have_sve(av_get_cpu_flags()))
         snprintf(arch_info_buf, sizeof(arch_info_buf),
                  "SVE %d bits, ", 8 * ff_aarch64_sve_length());
-#elif ARCH_RISCV && HAVE_RVV
+#endif
+#if ARCH_AARCH64 && HAVE_SME
+    if (have_sme(av_get_cpu_flags()))
+        av_strlcatf(arch_info_buf, sizeof(arch_info_buf),
+                    "SME %d bits, ", 8 * ff_aarch64_sme_length());
+#endif
+#if ARCH_RISCV && HAVE_RVV
     if (av_get_cpu_flags() & AV_CPU_FLAG_RVV_I32)
         snprintf(arch_info_buf, sizeof (arch_info_buf),
                  "%zu-bit vectors, ", 8 * ff_get_rv_vlenb());

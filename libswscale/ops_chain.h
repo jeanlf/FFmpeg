@@ -44,8 +44,10 @@ typedef union SwsOpPriv {
 
     /* Common types */
     void *ptr;
+    int8_t    i8[16];
     uint8_t   u8[16];
     uint16_t u16[8];
+    int16_t  i16[8];
     uint32_t u32[4];
     float    f32[4];
 } SwsOpPriv;
@@ -86,7 +88,11 @@ typedef struct SwsOpChain {
 } SwsOpChain;
 
 SwsOpChain *ff_sws_op_chain_alloc(void);
-void ff_sws_op_chain_free(SwsOpChain *chain);
+void ff_sws_op_chain_free_cb(void *chain);
+static inline void ff_sws_op_chain_free(SwsOpChain *chain)
+{
+    ff_sws_op_chain_free_cb(chain);
+}
 
 /* Returns 0 on success, or a negative error code. */
 int ff_sws_op_chain_append(SwsOpChain *chain, SwsFuncPtr func,
@@ -107,6 +113,7 @@ typedef struct SwsOpEntry {
         uint32_t       linear_mask; /* subset of SwsLinearOp */
         int            dither_size; /* subset of SwsDitherOp */
         int            clear_value; /* clear value for integer clears */
+        AVRational     scale;       /* scale factor for SWS_OP_SCALE */
     };
 
     /* Kernel implementation */
@@ -123,7 +130,7 @@ typedef struct SwsOpTable {
 
 /**
  * "Compile" a single op by looking it up in a list of fixed size op tables.
- * See `op_match` in `ops.c` for details on how the matching works.
+ * See `op_match` in `ops_chain.c` for details on how the matching works.
  *
  * Returns 0, AVERROR(EAGAIN), or a negative error code.
  */

@@ -31,11 +31,12 @@ SwsOpChain *ff_sws_op_chain_alloc(void)
     return av_mallocz(sizeof(SwsOpChain));
 }
 
-void ff_sws_op_chain_free(SwsOpChain *chain)
+void ff_sws_op_chain_free_cb(void *ptr)
 {
-    if (!chain)
+    if (!ptr)
         return;
 
+    SwsOpChain *chain = ptr;
     for (int i = 0; i < chain->num_impl + 1; i++) {
         if (chain->free[i])
             chain->free[i](chain->impl[i].priv.ptr);
@@ -65,7 +66,7 @@ int ff_sws_op_chain_append(SwsOpChain *chain, SwsFuncPtr func,
  *
  * If `ref->comps` has any flags set, they must be set in `op` as well.
  * Likewise, if `ref->comps` has any components marked as unused, they must be
- * marked as as unused in `ops` as well.
+ * marked as unused in `ops` as well.
  *
  * For SWS_OP_LINEAR, `ref->linear.mask` must be a strict superset of
  * `op->linear.mask`, but may not contain any columns explicitly ignored by
@@ -151,7 +152,7 @@ static int op_match(const SwsOp *op, const SwsOpEntry *entry, const SwsComps nex
     case SWS_OP_LSHIFT:
     case SWS_OP_RSHIFT:
         av_assert1(entry->flexible);
-        return score;
+        break;
     case SWS_OP_SWIZZLE:
         for (int i = 0; i < 4; i++) {
             if (op->swizzle.in[i] != entry->swizzle.in[i] && !next.unused[i])
@@ -168,7 +169,7 @@ static int op_match(const SwsOp *op, const SwsOpEntry *entry, const SwsComps nex
     case SWS_OP_MIN:
     case SWS_OP_MAX:
         av_assert1(entry->flexible);
-        return score;
+        break;
     case SWS_OP_LINEAR:
         /* All required elements must be present */
         if (op->lin.mask & ~entry->linear_mask)
@@ -183,7 +184,7 @@ static int op_match(const SwsOp *op, const SwsOpEntry *entry, const SwsComps nex
         score += av_popcount(SWS_MASK_ALL ^ entry->linear_mask);
         return score;
     case SWS_OP_SCALE:
-        return score;
+        return av_cmp_q(op->c.q, entry->scale) ? 0 : score;
     case SWS_OP_TYPE_NB:
         break;
     }
@@ -234,7 +235,7 @@ int ff_sws_op_compile_tables(const SwsOpTable *const tables[], int num_tables,
     ret = ff_sws_op_chain_append(chain, best->func, best->free, &priv);
     if (ret < 0) {
         if (best->free)
-            best->free(&priv);
+            best->free(priv.ptr);
         return ret;
     }
 

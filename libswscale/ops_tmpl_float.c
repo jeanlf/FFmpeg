@@ -44,7 +44,7 @@
 DECL_SETUP(setup_dither)
 {
     const int size = 1 << op->dither.size_log2;
-    if (!size) {
+    if (size == 1) {
         /* We special case this value */
         av_assert1(!av_cmp_q(op->dither.matrix[0], av_make_q(1, 2)));
         out->ptr = NULL;
@@ -55,6 +55,11 @@ DECL_SETUP(setup_dither)
     pixel_t *matrix = out->ptr = av_malloc(sizeof(pixel_t) * size * width);
     if (!matrix)
         return AVERROR(ENOMEM);
+
+    static_assert(sizeof(out->ptr) <= sizeof(uint8_t[8]), ">8 byte pointers not supported");
+    int8_t *offset = &out->i8[8];
+    for (int i = 0; i < 4; i++)
+        offset[i] = op->dither.y_offset[i];
 
     for (int y = 0; y < size; y++) {
         for (int x = 0; x < size; x++)
@@ -69,23 +74,25 @@ DECL_SETUP(setup_dither)
 DECL_FUNC(dither, const int size_log2)
 {
     const pixel_t *restrict matrix = impl->priv.ptr;
+    const int8_t *restrict offset = &impl->priv.i8[8];
     const int mask = (1 << size_log2) - 1;
     const int y_line = iter->y;
-    const int row0 = (y_line +  0) & mask;
-    const int row1 = (y_line +  3) & mask;
-    const int row2 = (y_line +  2) & mask;
-    const int row3 = (y_line +  5) & mask;
     const int size = 1 << size_log2;
     const int width = FFMAX(size, SWS_BLOCK_SIZE);
     const int base = iter->x & ~(SWS_BLOCK_SIZE - 1) & (size - 1);
 
-    SWS_LOOP
-    for (int i = 0; i < SWS_BLOCK_SIZE; i++) {
-        x[i] += size_log2 ? matrix[row0 * width + base + i] : (pixel_t) 0.5;
-        y[i] += size_log2 ? matrix[row1 * width + base + i] : (pixel_t) 0.5;
-        z[i] += size_log2 ? matrix[row2 * width + base + i] : (pixel_t) 0.5;
-        w[i] += size_log2 ? matrix[row3 * width + base + i] : (pixel_t) 0.5;
+#define DITHER_COMP(VAR, IDX)                                                            \
+    if (offset[IDX] >= 0) {                                                              \
+        const int row = (y_line + offset[IDX]) & mask;                                   \
+        SWS_LOOP                                                                         \
+        for (int i = 0; i < SWS_BLOCK_SIZE; i++)                                         \
+            VAR[i] += size_log2 ? matrix[row * width + base + i] : (pixel_t) 0.5;        \
     }
+
+    DITHER_COMP(x, 0)
+    DITHER_COMP(y, 1)
+    DITHER_COMP(z, 2)
+    DITHER_COMP(w, 3)
 
     CONTINUE(block_t, x, y, z, w);
 }
@@ -226,6 +233,10 @@ static const SwsOpTable fn(op_table_float) = {
         &fn(op_dither6),
         &fn(op_dither7),
         &fn(op_dither8),
+
+        &fn(op_clear_1110),
+        &fn(op_clear_0111),
+        &fn(op_clear_0011),
 
         &fn(op_linear_luma),
         &fn(op_linear_alpha),

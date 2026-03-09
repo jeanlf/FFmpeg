@@ -30,9 +30,9 @@
 #include "checkasm.h"
 
 enum {
-    LINES  = 2,
-    NB_PLANES = 4,
-    PIXELS = 64,
+    NB_PLANES   = 4,
+    PIXELS      = 64,
+    LINES       = 2,
 };
 
 enum {
@@ -174,7 +174,7 @@ static void check_ops(const char *report, const unsigned ranges[NB_PLANES],
 
     SwsOpExec exec = {0};
     exec.width = PIXELS;
-    exec.height = exec.slice_h = 1;
+    exec.height = exec.slice_h = LINES;
     for (int i = 0; i < NB_PLANES; i++) {
         exec.in_stride[i]  = sizeof(src0[i][0]);
         exec.out_stride[i] = sizeof(dst0[i][0]);
@@ -190,18 +190,14 @@ static void check_ops(const char *report, const unsigned ranges[NB_PLANES],
     uintptr_t id = (uintptr_t) backend_new;
     id ^= (id << 6) + (id >> 2) + 0x9e3779b97f4a7c15 + comp_new.cpu_flags;
 
-    checkasm_save_context();
-    if (checkasm_check_func((void *) id, "%s", report)) {
-        func_new = comp_new.func;
-        func_ref = comp_ref.func;
-
+    if (check_key((void*) id, "%s", report)) {
         exec.block_size_in  = comp_ref.block_size * rw_pixel_bits(read_op)  >> 3;
         exec.block_size_out = comp_ref.block_size * rw_pixel_bits(write_op) >> 3;
         for (int i = 0; i < NB_PLANES; i++) {
             exec.in[i]  = (void *) src0[i];
             exec.out[i] = (void *) dst0[i];
         }
-        call_ref(&exec, comp_ref.priv, 0, 0, PIXELS / comp_ref.block_size, LINES);
+        checkasm_call(comp_ref.func, &exec, comp_ref.priv, 0, 0, PIXELS / comp_ref.block_size, LINES);
 
         exec.block_size_in  = comp_new.block_size * rw_pixel_bits(read_op)  >> 3;
         exec.block_size_out = comp_new.block_size * rw_pixel_bits(write_op) >> 3;
@@ -209,7 +205,7 @@ static void check_ops(const char *report, const unsigned ranges[NB_PLANES],
             exec.in[i]  = (void *) src1[i];
             exec.out[i] = (void *) dst1[i];
         }
-        call_new(&exec, comp_new.priv, 0, 0, PIXELS / comp_new.block_size, LINES);
+        checkasm_call_checked(comp_new.func, &exec, comp_new.priv, 0, 0, PIXELS / comp_new.block_size, LINES);
 
         for (int i = 0; i < NB_PLANES; i++) {
             const char *name = FMT("%s[%d]", report, i);
@@ -242,7 +238,7 @@ static void check_ops(const char *report, const unsigned ranges[NB_PLANES],
                 break;
         }
 
-        bench_new(&exec, comp_new.priv, 0, 0, PIXELS / comp_new.block_size, LINES);
+        bench(comp_new.func, &exec, comp_new.priv, 0, 0, PIXELS / comp_new.block_size, LINES);
     }
 
     if (comp_new.func != comp_ref.func && comp_new.free)
@@ -426,7 +422,7 @@ static void check_pack_unpack(void)
             .pack = pack,
         });
 
-        CHECK_RANGE(FMT("unpack_%s", pat), (1 << total) - 1, 1, num, type, type, {
+        CHECK_RANGE(FMT("unpack_%s", pat), UINT32_MAX >> (32 - total), 1, num, type, type, {
             .op   = SWS_OP_UNPACK,
             .type = type,
             .pack = pack,
@@ -438,7 +434,7 @@ static AVRational rndq(SwsPixelType t)
 {
     const unsigned num = rnd();
     if (ff_sws_pixel_type_is_int(t)) {
-        const unsigned mask = (1 << (ff_sws_pixel_type_size(t) * 8)) - 1;
+        const unsigned mask = UINT_MAX >> (32 - ff_sws_pixel_type_size(t) * 8);
         return (AVRational) { num & mask, 1 };
     } else {
         const unsigned den = rnd();
@@ -588,7 +584,7 @@ static void check_convert(void)
                     .convert.to = o,
                 });
             } else if (isize > osize || !ff_sws_pixel_type_is_int(i)) {
-                uint32_t range = (1 << osize * 8) - 1;
+                uint32_t range = UINT32_MAX >> (32 - osize * 8);
                 CHECK_COMMON_RANGE(name, range, i, o, {
                     .op = SWS_OP_CONVERT,
                     .type = i,
@@ -624,6 +620,7 @@ static void check_dither(void)
         /* Test all sizes up to 256x256 */
         for (int size_log2 = 0; size_log2 <= 8; size_log2++) {
             const int size = 1 << size_log2;
+            const int mask = size - 1;
             AVRational *matrix = av_refstruct_allocz(size * size * sizeof(*matrix));
             if (!matrix) {
                 fail();
@@ -641,7 +638,8 @@ static void check_dither(void)
                 .op = SWS_OP_DITHER,
                 .type = t,
                 .dither.size_log2 = size_log2,
-                .dither.matrix = matrix,
+                .dither.matrix    = matrix,
+                .dither.y_offset  = {0, 3 & mask, 2 & mask, 5 & mask},
             });
 
             av_refstruct_unref(&matrix);
