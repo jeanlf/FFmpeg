@@ -30,6 +30,7 @@
 #define CACHED_BITSTREAM_READER !ARCH_X86_32
 #define UNCHECKED_BITSTREAM_READER 1
 
+#include "libavutil/cpu.h"
 #include "libavutil/intreadwrite.h"
 #include "libavutil/mem.h"
 #include "libavutil/pixdesc.h"
@@ -76,13 +77,12 @@ typedef struct HuffEntry {
 static int build_huff(UtvideoContext *c, const uint8_t *src, VLC *vlc,
                       VLC_MULTI *multi, int *fsym, unsigned nb_elems)
 {
-    int i;
     HuffEntry he[1024];
     uint8_t bits[1024];
     uint16_t codes_count[33] = { 0 };
 
     *fsym = -1;
-    for (i = 0; i < nb_elems; i++) {
+    for (unsigned i = 0; i < nb_elems; i++) {
         if (src[i] == 0) {
             *fsym = i;
             return 0;
@@ -1058,7 +1058,8 @@ static av_cold int decode_init(AVCodecContext *avctx)
         return AVERROR_INVALIDDATA;
     }
 
-    c->buffer = av_calloc(avctx->width + 8, c->pro?2:1);
+    /* add_left_pred reads whole vectors. */
+    c->buffer = av_calloc(avctx->width + av_cpu_max_align(), c->pro ? 2 : 1);
     if (!c->buffer)
         return AVERROR(ENOMEM);
 

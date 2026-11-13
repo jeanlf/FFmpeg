@@ -26,8 +26,8 @@
 #include "libavcodec/vp9dsp.h"
 #include "libavcodec/x86/vp9dsp_init.h"
 
-decl_fpel_func(put,   8,    , mmx);
-decl_fpel_func(avg,   8, _16, mmxext);
+decl_fpel_func(put,   8,    , sse2);
+decl_fpel_func(avg,   8, _16, sse2);
 decl_fpel_func(put,  16,    , sse);
 decl_fpel_func(put,  32,    , sse);
 decl_fpel_func(put,  64,    , sse);
@@ -43,11 +43,11 @@ decl_fpel_func(avg,  32, _16, avx2);
 decl_fpel_func(avg,  64, _16, avx2);
 decl_fpel_func(avg, 128, _16, avx2);
 
-decl_ipred_fns(v,       16, mmx,    sse);
-decl_ipred_fns(h,       16, mmxext, sse2);
-decl_ipred_fns(dc,      16, mmxext, sse2);
-decl_ipred_fns(dc_top,  16, mmxext, sse2);
-decl_ipred_fns(dc_left, 16, mmxext, sse2);
+decl_ipred_fns(v,       16, sse,    sse);
+decl_ipred_fns(h,       16, sse2,   sse2);
+decl_ipred_fns(dc,      16, sse2,   sse2);
+decl_ipred_fns(dc_top,  16, sse2,   sse2);
+decl_ipred_fns(dc_left, 16, sse2,   sse2);
 decl_ipred_fn(dl,       16,     16, avx2);
 decl_ipred_fn(dl,       32,     16, avx2);
 decl_ipred_fn(dr,       16,     16, avx2);
@@ -71,36 +71,26 @@ av_cold void ff_vp9dsp_init_16bpp_x86(VP9DSPContext *dsp)
 {
     int cpu_flags = av_get_cpu_flags();
 
-    if (EXTERNAL_MMX(cpu_flags)) {
-        init_fpel_func(4, 0,   8, put, , mmx);
-        init_ipred_func(v, VERT, 4, 16, mmx);
-    }
-
-    if (EXTERNAL_MMXEXT(cpu_flags)) {
-        init_fpel_func(4, 1,   8, avg, _16, mmxext);
-        init_ipred_func(h, HOR, 4, 16, mmxext);
-        init_ipred_func(dc, DC, 4, 16, mmxext);
-        init_ipred_func(dc_top,  TOP_DC,  4, 16, mmxext);
-        init_ipred_func(dc_left, LEFT_DC, 4, 16, mmxext);
-    }
-
     if (EXTERNAL_SSE(cpu_flags)) {
         init_fpel_func(3, 0,  16, put, , sse);
         init_fpel_func(2, 0,  32, put, , sse);
         init_fpel_func(1, 0,  64, put, , sse);
         init_fpel_func(0, 0, 128, put, , sse);
         init_8_16_32_ipred_funcs(v, VERT, 16, sse);
+        init_ipred_func(v, VERT, 4, 16, sse);
     }
 
     if (EXTERNAL_SSE2(cpu_flags)) {
+        init_fpel_func(4, 0,   8, put, , sse2);
+        init_fpel_func(4, 1,   8, avg, _16, sse2);
         init_fpel_func(3, 1,  16, avg, _16, sse2);
         init_fpel_func(2, 1,  32, avg, _16, sse2);
         init_fpel_func(1, 1,  64, avg, _16, sse2);
         init_fpel_func(0, 1, 128, avg, _16, sse2);
-        init_8_16_32_ipred_funcs(h, HOR, 16, sse2);
-        init_8_16_32_ipred_funcs(dc, DC, 16, sse2);
-        init_8_16_32_ipred_funcs(dc_top,  TOP_DC,  16, sse2);
-        init_8_16_32_ipred_funcs(dc_left, LEFT_DC, 16, sse2);
+        init_ipred_funcs(h, HOR, 16, sse2);
+        init_ipred_funcs(dc, DC, 16, sse2);
+        init_ipred_funcs(dc_top,  TOP_DC,  16, sse2);
+        init_ipred_funcs(dc_left, LEFT_DC, 16, sse2);
         init_ipred_funcs(dl, DIAG_DOWN_LEFT, 16, sse2);
         init_ipred_funcs(dr, DIAG_DOWN_RIGHT, 16, sse2);
         init_ipred_funcs(vl, VERT_LEFT, 16, sse2);

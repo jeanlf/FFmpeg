@@ -532,18 +532,6 @@ static av_cold void ff_vvdec_decode_flush(AVCodecContext *avctx)
     s->bFlush = false;
 }
 
-static const enum AVPixelFormat pix_fmts_vvdec[] = {
-    AV_PIX_FMT_GRAY8,
-    AV_PIX_FMT_GRAY10,
-    AV_PIX_FMT_YUV420P,
-    AV_PIX_FMT_YUV422P,
-    AV_PIX_FMT_YUV444P,
-    AV_PIX_FMT_YUV420P10LE,
-    AV_PIX_FMT_YUV422P10LE,
-    AV_PIX_FMT_YUV444P10LE,
-    AV_PIX_FMT_NONE
-};
-
 static const AVClass class_libvvdec = {
     .class_name = "libvvdec-vvc decoder",
     .item_name  = av_default_item_name,
@@ -560,7 +548,6 @@ FFCodec ff_libvvdec_decoder = {
     .p.priv_class   = &class_libvvdec,
     .p.wrapper_name = "libvvdec",
     .priv_data_size = sizeof(VVdeCContext),
-    .p.pix_fmts     = pix_fmts_vvdec,
     .init           = ff_vvdec_decode_init,
     FF_CODEC_DECODE_CB(ff_vvdec_decode_frame),
     .close          = ff_vvdec_decode_close,

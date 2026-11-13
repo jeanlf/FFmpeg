@@ -227,7 +227,7 @@ static int parse_imf_asset_map_from_xml_dom(AVFormatContext *s,
     asset_map->assets = tmp;
 
     asset_element = xmlFirstElementChild(node);
-    while (asset_element) {
+    for (; asset_element; asset_element = xmlNextElementSibling(asset_element)) {
         if (av_strcasecmp(asset_element->name, "Asset") != 0)
             continue;
 
@@ -255,7 +255,20 @@ static int parse_imf_asset_map_from_xml_dom(AVFormatContext *s,
             return AVERROR_INVALIDDATA;
         }
 
-        uri = xmlNodeGetContent(ff_imf_xml_get_child_element_by_name(node, "Path"));
+        xmlNodePtr path_node = ff_imf_xml_get_child_element_by_name(node, "Path");
+        if (!path_node) {
+            av_log(s, AV_LOG_ERROR, "Unable to parse asset map XML - missing Path element in Chunk\n");
+            ret = AVERROR_INVALIDDATA;
+            break;
+        }
+        uri = xmlNodeGetContent(path_node);
+        if (!uri || !uri[0]) {
+            av_log(s, AV_LOG_ERROR, "Unable to parse asset map XML - empty Path element in Chunk\n");
+            xmlFree(uri);
+            ret = AVERROR_INVALIDDATA;
+            break;
+        }
+
         if (!imf_uri_is_url(uri) && !imf_uri_is_unix_abs_path(uri) && !imf_uri_is_dos_abs_path(uri))
             asset->absolute_uri = av_append_path_component(base_url, uri);
         else
@@ -267,7 +280,6 @@ static int parse_imf_asset_map_from_xml_dom(AVFormatContext *s,
         av_log(s, AV_LOG_DEBUG, "Found asset absolute URI: %s\n", asset->absolute_uri);
 
         asset_map->asset_count++;
-        asset_element = xmlNextElementSibling(asset_element);
     }
 
     return ret;
@@ -454,6 +466,7 @@ static int open_track_file_resource(AVFormatContext *s,
 {
     IMFContext *c = s->priv_data;
     IMFAssetLocator *asset_locator;
+    AVRational duration;
     void *tmp;
 
     asset_locator = find_asset_map_locator(&c->asset_locator_map, track_file_resource->track_file_uuid);
@@ -481,6 +494,10 @@ static int open_track_file_resource(AVFormatContext *s,
         return AVERROR(ENOMEM);
     track->resources = tmp;
 
+    av_reduce(&duration.num, &duration.den,
+              track_file_resource->base.duration * (int64_t)track_file_resource->base.edit_rate.den,
+              track_file_resource->base.edit_rate.num, INT_MAX);
+
     for (uint32_t i = 0; i < track_file_resource->base.repeat_count; i++) {
         IMFVirtualTrackResourcePlaybackCtx vt_ctx;
 
@@ -491,10 +508,7 @@ static int open_track_file_resource(AVFormatContext *s,
         vt_ctx.ts_offset = av_sub_q(vt_ctx.start_time,
                                     av_div_q(av_make_q((int)track_file_resource->base.entry_point, 1),
                                              track_file_resource->base.edit_rate));
-        vt_ctx.end_time = av_add_q(track->duration,
-                                   av_make_q((int)track_file_resource->base.duration
-                                                 * track_file_resource->base.edit_rate.den,
-                                             track_file_resource->base.edit_rate.num));
+        vt_ctx.end_time = av_add_q(track->duration, duration);
         track->resources[track->resource_count++] = vt_ctx;
         track->duration = vt_ctx.end_time;
     }
@@ -524,6 +538,12 @@ static int open_virtual_track(AVFormatContext *s,
     track->current_resource_index = -1;
     track->index = track_index;
     track->duration = av_make_q(0, 1);
+
+    if (!virtual_track->resource_count) {
+        av_log(s, AV_LOG_ERROR, "Virtual track has no resources\n");
+        ret = AVERROR_INVALIDDATA;
+        goto clean_up;
+    }
 
     for (uint32_t i = 0; i < virtual_track->resource_count; i++) {
         av_log(s,

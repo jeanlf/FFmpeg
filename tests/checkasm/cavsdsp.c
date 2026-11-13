@@ -18,12 +18,14 @@
 
 #include <assert.h>
 #include <stddef.h>
+#include <string.h>
 
 #include "checkasm.h"
 #include "libavutil/intreadwrite.h"
 #include "libavutil/macros.h"
 #include "libavutil/mem_internal.h"
 #include "libavcodec/cavsdsp.h"
+#include "libavcodec/idctdsp.h"
 
 
 enum {
@@ -71,7 +73,7 @@ static void check_cavs_qpeldsp(void)
         TEST(put_cavs_qpel_pixels_tab),
         TEST(avg_cavs_qpel_pixels_tab),
     };
-    declare_func_emms(AV_CPU_FLAG_MMX | AV_CPU_FLAG_MMXEXT, void, uint8_t *dst, const uint8_t *src, ptrdiff_t stride);
+    declare_func(void, uint8_t *dst, const uint8_t *src, ptrdiff_t stride);
 
     ff_cavsdsp_init(&cavsdsp);
 
@@ -113,8 +115,45 @@ static void check_cavs_qpeldsp(void)
     }
 }
 
+static void check_cavs_idct8_add(void)
+{
+    DECLARE_ALIGNED(16, int16_t, block0)[64];
+    DECLARE_ALIGNED(16, int16_t, block1)[64];
+    DECLARE_ALIGNED(16, uint8_t, dstbuf0)[8 * 16];
+    DECLARE_ALIGNED(16, uint8_t, dstbuf1)[8 * 16];
+    uint8_t permutation[64];
+    CAVSDSPContext cavsdsp;
+    declare_func(void, uint8_t *dst, int16_t *block, ptrdiff_t stride);
+
+    ff_cavsdsp_init(&cavsdsp);
+    ff_init_scantable_permutation(permutation, cavsdsp.idct_perm);
+
+    if (check_func(cavsdsp.cavs_idct8_add, "cavs_idct8_add")) {
+        for (int iter = 0; iter < 64; iter++) {
+            int n = 1 + rnd() % 64;
+
+            memset(block0, 0, sizeof(block0));
+            /* magnitudes from the whole int16_t range down to single digits */
+            for (int k = 0; k < n; k++)
+                block0[rnd() % 64] = (int16_t)rnd() >> (rnd() % 16);
+            /* the reference is the C version, which takes natural order */
+            for (int i = 0; i < 64; i++)
+                block1[permutation[i]] = block0[i];
+
+            randomize_buffers(dstbuf0, dstbuf1);
+            call_ref(dstbuf0, block0, 16);
+            call_new(dstbuf1, block1, 16);
+            if (memcmp(dstbuf0, dstbuf1, sizeof(dstbuf0)))
+                fail();
+        }
+        bench_new(dstbuf1, block1, 16);
+    }
+}
+
 void checkasm_check_cavsdsp(void)
 {
     check_cavs_qpeldsp();
     report("qpeldsp");
+    check_cavs_idct8_add();
+    report("idct8");
 }

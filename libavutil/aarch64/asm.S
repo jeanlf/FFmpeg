@@ -64,6 +64,26 @@
 #define DISABLE_I8MM
 #endif
 
+#if HAVE_AS_ARCHEXT_AES_DIRECTIVE
+#define ENABLE_ARM_AES  .arch_extension aes
+#define ENABLE_PMULL    .arch_extension aes
+#define DISABLE_ARM_AES .arch_extension noaes
+#define DISABLE_PMULL   .arch_extension noaes
+#else
+#define ENABLE_ARM_AES
+#define ENABLE_PMULL
+#define DISABLE_ARM_AES
+#define DISABLE_PMULL
+#endif
+
+#if HAVE_AS_ARCHEXT_SHA3_DIRECTIVE
+#define ENABLE_EOR3  .arch_extension sha3
+#define DISABLE_EOR3 .arch_extension nosha3
+#else
+#define ENABLE_EOR3
+#define DISABLE_EOR3
+#endif
+
 #if HAVE_AS_ARCHEXT_SVE_DIRECTIVE
 #define ENABLE_SVE  .arch_extension sve
 #define DISABLE_SVE .arch_extension nosve
@@ -105,6 +125,9 @@
 #endif
 
 DISABLE_ARM_CRC
+DISABLE_ARM_AES
+DISABLE_PMULL
+DISABLE_EOR3
 DISABLE_DOTPROD
 DISABLE_I8MM
 DISABLE_SVE
@@ -113,26 +136,6 @@ DISABLE_SME
 DISABLE_SME_I16I64
 DISABLE_SME2
 
-#if HAVE_SME
-.macro sme_entry
-        stp             x29, x30, [sp, #-80]!
-        mov             x29, sp
-        stp             d8, d9, [sp, #16]
-        stp             d10, d11, [sp, #32]
-        stp             d12, d13, [sp, #48]
-        stp             d14, d15, [sp, #64]
-        smstart
-.endm
-
-.macro sme_exit
-        smstop
-        ldp             d8, d9, [sp, #16]
-        ldp             d10, d11, [sp, #32]
-        ldp             d12, d13, [sp, #48]
-        ldp             d14, d15, [sp, #64]
-        ldp             x29, x30, [sp], #80
-.endm
-#endif
 
 /* Support macros for
  *   - Armv8.3-A Pointer Authentication and
@@ -203,16 +206,18 @@ DISABLE_SME2
  *
  * References:
  * - "ELF for the Arm® 64-bit Architecture"
- *   https: *github.com/ARM-software/abi-aa/blob/master/aaelf64/aaelf64.rst
+ *   https://github.com/ARM-software/abi-aa/blob/master/aaelf64/aaelf64.rst
  * - "Providing protection for complex software"
  *   https://developer.arm.com/architectures/learn-the-architecture/providing-protection-for-complex-software
  */
 #if defined(__ARM_FEATURE_BTI_DEFAULT) && (__ARM_FEATURE_BTI_DEFAULT == 1)
 #   define GNU_PROPERTY_AARCH64_BTI (1 << 0)   // Has BTI
-#   define AARCH64_VALID_CALL_TARGET hint #34  // BTI 'c'
-#   define AARCH64_VALID_JUMP_TARGET hint #38  // BTI 'j'
+#   define AARCH64_VALID_JUMP_CALL_TARGET hint #38  // BTI 'jc'
+#   define AARCH64_VALID_CALL_TARGET      hint #34  // BTI 'c'
+#   define AARCH64_VALID_JUMP_TARGET      hint #38  // BTI 'j'
 #else
 #   define GNU_PROPERTY_AARCH64_BTI 0          // No BTI
+#   define AARCH64_VALID_JUMP_CALL_TARGET
 #   define AARCH64_VALID_CALL_TARGET
 #   define AARCH64_VALID_JUMP_TARGET
 #endif
@@ -237,8 +242,14 @@ DISABLE_SME2
 #   define AARCH64_VALIDATE_LINK_REGISTER
 #endif
 
+#if defined(__ARM_FEATURE_GCS_DEFAULT) && __ARM_FEATURE_GCS_DEFAULT == 1
+#define GNU_PROPERTY_AARCH64_GCS (1 << 2)
+#else
+#define GNU_PROPERTY_AARCH64_GCS 0 /* No GCS */
+#endif
 
-#if (GNU_PROPERTY_AARCH64_BTI != 0 || GNU_PROPERTY_AARCH64_PAC != 0) && defined(__ELF__)
+
+#if (GNU_PROPERTY_AARCH64_BTI != 0 || GNU_PROPERTY_AARCH64_PAC != 0 || GNU_PROPERTY_AARCH64_GCS != 0) && defined(__ELF__)
         .pushsection .note.gnu.property, "a"
         .balign 8
         .long 4
@@ -247,12 +258,12 @@ DISABLE_SME2
         .asciz "GNU"
         .long 0xc0000000 /* GNU_PROPERTY_AARCH64_FEATURE_1_AND */
         .long 4
-        .long (GNU_PROPERTY_AARCH64_BTI | GNU_PROPERTY_AARCH64_PAC)
+        .long (GNU_PROPERTY_AARCH64_BTI | GNU_PROPERTY_AARCH64_PAC | GNU_PROPERTY_AARCH64_GCS)
         .long 0
         .popsection
 #endif
 
-.macro  function name, export=0, align=4
+.macro  function name, export=0, jumpable=0, align=4
     .macro endfunc
 ELF     .size   \name, . - \name
 FUNC    .endfunc
@@ -265,7 +276,11 @@ FUNC    .endfunc
 ELF     .type   EXTERN_ASM\name, %function
 FUNC    .func   EXTERN_ASM\name
 EXTERN_ASM\name:
+    .if \jumpable
+        AARCH64_VALID_JUMP_TARGET
+    .else
         AARCH64_VALID_CALL_TARGET
+    .endif
     .else
 ELF     .type   \name, %function
 FUNC    .func   \name
@@ -332,3 +347,146 @@ ELF     .size   \name, . - \name
 
 #define x18 do_not_use_x18
 #define w18 do_not_use_w18
+
+#if HAVE_SME
+.macro sme_entry
+        AARCH64_SIGN_LINK_REGISTER
+        stp             x29, x30, [sp, #-80]!
+        mov             x29, sp
+        stp             d8,  d9,  [sp, #16]
+        stp             d10, d11, [sp, #32]
+        stp             d12, d13, [sp, #48]
+        stp             d14, d15, [sp, #64]
+        smstart
+.endm
+
+.macro sme_exit
+        smstop
+        ldp             d8,  d9,  [sp, #16]
+        ldp             d10, d11, [sp, #32]
+        ldp             d12, d13, [sp, #48]
+        ldp             d14, d15, [sp, #64]
+        ldp             x29, x30, [sp], #80
+        AARCH64_VALIDATE_LINK_REGISTER
+.endm
+#endif
+
+
+#if CONFIG_ASM_DEBUG
+#undef x18
+.macro call_c func, line, msg, first, last, ptr, offset
+        stp             x29, x30, [sp, #-16]!
+        stp             x27, x28, [sp, #-16]!
+        stp             x25, x26, [sp, #-16]!
+        stp             x23, x24, [sp, #-16]!
+        stp             x21, x22, [sp, #-16]!
+        stp             x19, x20, [sp, #-16]!
+        stp             x17, x18, [sp, #-16]!
+        stp             x15, x16, [sp, #-16]!
+        stp             x13, x14, [sp, #-16]!
+        stp             x11, x12, [sp, #-16]!
+        stp             x9,  x10, [sp, #-16]!
+        stp             x7,  x8,  [sp, #-16]!
+        stp             x5,  x6,  [sp, #-16]!
+        stp             x3,  x4,  [sp, #-16]!
+        stp             x1,  x2,  [sp, #-16]!
+        mrs             x30, nzcv
+        stp             x30, x0,  [sp, #-16]!
+
+        stp             q30, q31, [sp, #-32]!
+        stp             q28, q29, [sp, #-32]!
+        stp             q26, q27, [sp, #-32]!
+        stp             q24, q25, [sp, #-32]!
+        stp             q22, q23, [sp, #-32]!
+        stp             q20, q21, [sp, #-32]!
+        stp             q18, q19, [sp, #-32]!
+        stp             q16, q17, [sp, #-32]!
+        stp             q14, q15, [sp, #-32]!
+        stp             q12, q13, [sp, #-32]!
+        stp             q10, q11, [sp, #-32]!
+        stp             q8,  q9,  [sp, #-32]!
+        stp             q6,  q7,  [sp, #-32]!
+        stp             q4,  q5,  [sp, #-32]!
+        stp             q2,  q3,  [sp, #-32]!
+        stp             q0,  q1,  [sp, #-32]!
+
+        add             x4,  \ptr, #\offset
+        ldr             x0,  =\line
+        adr             x1,  777f
+        mov             x2,  \first
+        mov             x3,  \last
+        bl              X(avpriv_\func)
+
+        ldp             q0,  q1,  [sp], #32
+        ldp             q2,  q3,  [sp], #32
+        ldp             q4,  q5,  [sp], #32
+        ldp             q6,  q7,  [sp], #32
+        ldp             q8,  q9,  [sp], #32
+        ldp             q10, q11, [sp], #32
+        ldp             q12, q13, [sp], #32
+        ldp             q14, q15, [sp], #32
+        ldp             q16, q17, [sp], #32
+        ldp             q18, q19, [sp], #32
+        ldp             q20, q21, [sp], #32
+        ldp             q22, q23, [sp], #32
+        ldp             q24, q25, [sp], #32
+        ldp             q26, q27, [sp], #32
+        ldp             q28, q29, [sp], #32
+        ldp             q30, q31, [sp], #32
+
+        ldp             x30, x0,  [sp], #16
+        msr             nzcv, x30
+        ldp             x1,  x2,  [sp], #16
+        ldp             x3,  x4,  [sp], #16
+        ldp             x5,  x6,  [sp], #16
+        ldp             x7,  x8,  [sp], #16
+        ldp             x9,  x10, [sp], #16
+        ldp             x11, x12, [sp], #16
+        ldp             x13, x14, [sp], #16
+        ldp             x15, x16, [sp], #16
+        ldp             x17, x18, [sp], #16
+        ldp             x19, x20, [sp], #16
+        ldp             x21, x22, [sp], #16
+        ldp             x23, x24, [sp], #16
+        ldp             x25, x26, [sp], #16
+        ldp             x27, x28, [sp], #16
+        ldp             x29, x30, [sp], #16
+.endm
+
+#ifdef __APPLE__
+#define SEP %%
+#else
+#define SEP ;
+#endif
+
+#define CALL_C(func, msg, first, last, ptr, offset) \
+        call_c          func, __LINE__, msg, first, last, ptr, offset SEP \
+        b               778f SEP \
+    777: \
+        .asciz msg SEP \
+        .align 2 SEP \
+    778:
+
+#define DUMP_SIMD_S8(msg, first, last)  CALL_C(dump_simd_s8,  msg, first, last, sp, 0)
+#define DUMP_SIMD_U8(msg, first, last)  CALL_C(dump_simd_u8,  msg, first, last, sp, 0)
+#define DUMP_SIMD_S16(msg, first, last) CALL_C(dump_simd_s16, msg, first, last, sp, 0)
+#define DUMP_SIMD_U16(msg, first, last) CALL_C(dump_simd_u16, msg, first, last, sp, 0)
+#define DUMP_SIMD_S32(msg, first, last) CALL_C(dump_simd_s32, msg, first, last, sp, 0)
+#define DUMP_SIMD_U32(msg, first, last) CALL_C(dump_simd_u32, msg, first, last, sp, 0)
+#define DUMP_SIMD_S64(msg, first, last) CALL_C(dump_simd_s64, msg, first, last, sp, 0)
+#define DUMP_SIMD_U64(msg, first, last) CALL_C(dump_simd_u64, msg, first, last, sp, 0)
+#define DUMP_SIMD_F32(msg, first, last) CALL_C(dump_simd_f32, msg, first, last, sp, 0)
+#define DUMP_SIMD_F64(msg, first, last) CALL_C(dump_simd_f64, msg, first, last, sp, 0)
+#define DUMP_MEM_S8(msg, reg, n)        CALL_C(dump_simd_s8,  msg, 0, n-1, reg, 0)
+#define DUMP_MEM_U8(msg, reg, n)        CALL_C(dump_simd_u8,  msg, 0, n-1, reg, 0)
+#define DUMP_MEM_S16(msg, reg, n)       CALL_C(dump_simd_s16, msg, 0, n-1, reg, 0)
+#define DUMP_MEM_U16(msg, reg, n)       CALL_C(dump_simd_u16, msg, 0, n-1, reg, 0)
+#define DUMP_MEM_S32(msg, reg, n)       CALL_C(dump_simd_s32, msg, 0, n-1, reg, 0)
+#define DUMP_MEM_U32(msg, reg, n)       CALL_C(dump_simd_u32, msg, 0, n-1, reg, 0)
+#define DUMP_MEM_S64(msg, reg, n)       CALL_C(dump_simd_s64, msg, 0, n-1, reg, 0)
+#define DUMP_MEM_U64(msg, reg, n)       CALL_C(dump_simd_u64, msg, 0, n-1, reg, 0)
+#define DUMP_MEM_F32(msg, reg, n)       CALL_C(dump_simd_f32, msg, 0, n-1, reg, 0)
+#define DUMP_MEM_F64(msg, reg, n)       CALL_C(dump_simd_f64, msg, 0, n-1, reg, 0)
+#define DUMP_GPR(msg, first, last)      CALL_C(dump_gpr,      msg, first, last, sp, 520)
+
+#endif /* CONFIG_ASM_DEBUG */

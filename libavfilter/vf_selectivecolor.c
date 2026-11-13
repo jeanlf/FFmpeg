@@ -186,13 +186,15 @@ static int parse_psfile(AVFilterContext *ctx, const char *fname)
 {
     int16_t val;
     int ret, i, version;
-    uint8_t *buf;
-    size_t size;
+    uint8_t *map, *buf;
+    size_t map_size, size;
     SelectiveColorContext *s = ctx->priv;
 
-    ret = av_file_map(fname, &buf, &size, 0, NULL);
+    ret = av_file_map(fname, &map, &map_size, 0, NULL);
     if (ret < 0)
         return ret;
+    buf  = map;
+    size = map_size;
 
 #define READ16(dst) do {                \
     if (size < 2) {                     \
@@ -210,6 +212,10 @@ static int parse_psfile(AVFilterContext *ctx, const char *fname)
                "the settings might not be loaded properly\n", version);
 
     READ16(s->correction_method);
+    if (s->correction_method >= NB_CORRECTION_METHODS) {
+        ret = AVERROR_INVALIDDATA;
+        goto end;
+    }
 
     // 1st CMYK entry is reserved/unused
     for (i = 0; i < FF_ARRAY_ELEMS(s->cmyk_adjust[0]); i++) {
@@ -231,7 +237,7 @@ static int parse_psfile(AVFilterContext *ctx, const char *fname)
     }
 
 end:
-    av_file_unmap(buf, size);
+    av_file_unmap(map, map_size);
     return ret;
 }
 
@@ -316,8 +322,8 @@ static inline int selective_color_##nbits(AVFilterContext *ctx, ThreadData *td, 
     const SelectiveColorContext *s = ctx->priv;                                                         \
     const int height = in->height;                                                                      \
     const int width  = in->width;                                                                       \
-    const int slice_start = (height *  jobnr   ) / nb_jobs;                                             \
-    const int slice_end   = (height * (jobnr+1)) / nb_jobs;                                             \
+    const int slice_start = ff_slice_pos(height, jobnr, nb_jobs);                                       \
+    const int slice_end   = ff_slice_pos(height, jobnr + 1, nb_jobs);                                   \
     const int dst_linesize = out->linesize[0] / ((nbits + 7) / 8);                                      \
     const int src_linesize =  in->linesize[0] / ((nbits + 7) / 8);                                      \
     const uint8_t roffset = s->rgba_map[R];                                                             \

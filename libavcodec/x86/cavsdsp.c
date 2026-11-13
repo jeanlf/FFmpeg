@@ -24,29 +24,17 @@
 
 #include "libavutil/attributes.h"
 #include "libavutil/cpu.h"
-#include "libavutil/mem_internal.h"
 #include "libavutil/x86/cpu.h"
 #include "libavcodec/cavsdsp.h"
 #include "libavcodec/idctdsp.h"
 #include "fpel.h"
-#include "idctdsp.h"
 #include "config.h"
 
 
 #if HAVE_SSE2_EXTERNAL
 
-void ff_cavs_idct8_sse2(int16_t *out, const int16_t *in);
+void ff_cavs_idct8_add_sse2(uint8_t *dst, int16_t *block, ptrdiff_t stride);
 
-static void cavs_idct8_add_sse2(uint8_t *dst, int16_t *block, ptrdiff_t stride)
-{
-    LOCAL_ALIGNED(16, int16_t, b2, [64]);
-    ff_cavs_idct8_sse2(b2, block);
-    ff_add_pixels_clamped_sse2(b2, dst, stride);
-}
-
-#endif /* HAVE_SSE2_EXTERNAL */
-
-#if HAVE_SSE2_EXTERNAL
 #define DEF_QPEL(OPNAME) \
     void ff_ ## OPNAME ## _cavs_qpel8_mc20_sse2(uint8_t *dst, const uint8_t *src, ptrdiff_t stride);     \
     void ff_ ## OPNAME ## _cavs_qpel8_mc02_sse2(uint8_t *dst, const uint8_t *src, ptrdiff_t stride);     \
@@ -89,14 +77,9 @@ QPEL_CAVS_XMM(avg, sse2)
 
 av_cold void ff_cavsdsp_init_x86(CAVSDSPContext *c)
 {
-    av_unused int cpu_flags = av_get_cpu_flags();
-
-#if HAVE_MMX_EXTERNAL
-    if (EXTERNAL_MMXEXT(cpu_flags)) {
-        c->avg_cavs_qpel_pixels_tab[1][0] = ff_avg_pixels8x8_mmxext;
-    }
-#endif
 #if HAVE_SSE2_EXTERNAL
+    int cpu_flags = av_get_cpu_flags();
+
     if (EXTERNAL_SSE2(cpu_flags)) {
         c->put_cavs_qpel_pixels_tab[0][ 0] = ff_put_pixels16x16_sse2;
         c->put_cavs_qpel_pixels_tab[0][ 2] = put_cavs_qpel16_mc20_sse2;
@@ -114,13 +97,14 @@ av_cold void ff_cavsdsp_init_x86(CAVSDSPContext *c)
         c->avg_cavs_qpel_pixels_tab[0][ 4] = avg_cavs_qpel16_mc01_sse2;
         c->avg_cavs_qpel_pixels_tab[0][ 8] = avg_cavs_qpel16_mc02_sse2;
         c->avg_cavs_qpel_pixels_tab[0][12] = avg_cavs_qpel16_mc03_sse2;
+        c->avg_cavs_qpel_pixels_tab[1][ 0] = ff_avg_pixels8x8_sse2;
         c->avg_cavs_qpel_pixels_tab[1][ 2] = ff_avg_cavs_qpel8_mc20_sse2;
         c->avg_cavs_qpel_pixels_tab[1][ 4] = avg_cavs_qpel8_mc01_sse2;
         c->avg_cavs_qpel_pixels_tab[1][ 8] = ff_avg_cavs_qpel8_mc02_sse2;
         c->avg_cavs_qpel_pixels_tab[1][12] = ff_avg_cavs_qpel8_mc03_sse2;
 
-        c->cavs_idct8_add = cavs_idct8_add_sse2;
-        c->idct_perm      = FF_IDCT_PERM_TRANSPOSE;
+        c->cavs_idct8_add = ff_cavs_idct8_add_sse2;
+        c->idct_perm      = FF_IDCT_PERM_LIBMPEG2;
     }
 #endif
 }

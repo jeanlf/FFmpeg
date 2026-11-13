@@ -24,7 +24,7 @@
 #include "libavutil/opt.h"
 #include "libavutil/pixdesc.h"
 #include "libavcodec/flac.h"
-#include "libavcodec/packet_internal.h"
+#include "packet_internal.h"
 #include "avformat.h"
 #include "avio_internal.h"
 #include "flacenc.h"
@@ -32,7 +32,7 @@
 #include "internal.h"
 #include "mux.h"
 #include "version.h"
-#include "vorbiscomment.h"
+#include "libavformat/vorbis/comment.h"
 
 
 typedef struct FlacMuxerContext {
@@ -66,9 +66,9 @@ static int flac_write_block_comment(AVIOContext *pb, AVDictionary **m,
     const char *vendor = bitexact ? "ffmpeg" : LIBAVFORMAT_IDENT;
     int len;
 
-    ff_metadata_conv(m, ff_vorbiscomment_metadata_conv, NULL);
+    ff_metadata_conv(m, ff_vorbis_comment_metadata_conv, NULL);
 
-    len = ff_vorbiscomment_length(*m, vendor, NULL, 0);
+    len = ff_vorbis_comment_length(*m, vendor, NULL, 0);
     if (len < 0)
         return len;
     if (len >= ((1<<24) - 4))
@@ -76,7 +76,7 @@ static int flac_write_block_comment(AVIOContext *pb, AVDictionary **m,
 
     avio_w8(pb, last_block ? 0x84 : 0x04);
     avio_wb24(pb, len);
-    ff_vorbiscomment_write(pb, *m, vendor, NULL, 0);
+    ff_vorbis_comment_write(pb, *m, vendor, NULL, 0);
 
     return 0;
 }
@@ -311,7 +311,7 @@ static int flac_queue_flush(AVFormatContext *s)
         write = 0;
 
     while (c->queue.head) {
-        avpriv_packet_list_get(&c->queue, pkt);
+        ff_packet_list_get(&c->queue, pkt);
         if (write && (ret = flac_write_audio_packet(s, pkt)) < 0)
             write = 0;
         av_packet_unref(pkt);
@@ -351,7 +351,7 @@ static void flac_deinit(struct AVFormatContext *s)
 {
     FlacMuxerContext *c = s->priv_data;
 
-    avpriv_packet_list_free(&c->queue);
+    ff_packet_list_free(&c->queue);
     for (unsigned i = 0; i < s->nb_streams; i++)
         av_packet_free((AVPacket **)&s->streams[i]->priv_data);
 }
@@ -364,7 +364,7 @@ static int flac_write_packet(struct AVFormatContext *s, AVPacket *pkt)
     if (pkt->stream_index == c->audio_stream_idx) {
         if (c->waiting_pics) {
             /* buffer audio packets until we get all the pictures */
-            ret = avpriv_packet_list_put(&c->queue, pkt, NULL, 0);
+            ret = ff_packet_list_put(&c->queue, pkt, NULL, 0);
             if (ret < 0) {
                 av_log(s, AV_LOG_ERROR, "Out of memory in packet queue; skipping attached pictures\n");
                 c->waiting_pics = 0;

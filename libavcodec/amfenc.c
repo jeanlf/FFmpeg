@@ -17,13 +17,11 @@
  */
 
 #include "config.h"
-#include "config_components.h"
 
 #include "libavutil/avassert.h"
 #include "libavutil/imgutils.h"
 #include "libavutil/hwcontext.h"
 #include "libavutil/hwcontext_amf.h"
-#include "libavutil/hwcontext_amf_internal.h"
 #if CONFIG_D3D11VA
 #include "libavutil/hwcontext_d3d11va.h"
 #endif
@@ -37,61 +35,11 @@
 
 #include "amfenc.h"
 #include "encode.h"
-#include "internal.h"
-#include "libavutil/mastering_display_metadata.h"
+
+#include <AMF/components/PreAnalysis.h>
 
 #define AMF_AV_FRAME_REF    L"av_frame_ref"
 #define PTS_PROP            L"PtsProp"
-
-static int amf_save_hdr_metadata(AVCodecContext *avctx, const AVFrame *frame, AMFHDRMetadata *hdrmeta)
-{
-    AVFrameSideData            *sd_display;
-    AVFrameSideData            *sd_light;
-    AVMasteringDisplayMetadata *display_meta;
-    AVContentLightMetadata     *light_meta;
-
-    sd_display = av_frame_get_side_data(frame, AV_FRAME_DATA_MASTERING_DISPLAY_METADATA);
-    if (sd_display) {
-        display_meta = (AVMasteringDisplayMetadata *)sd_display->data;
-        if (display_meta->has_luminance) {
-            const unsigned int luma_den = 10000;
-            hdrmeta->maxMasteringLuminance =
-                (amf_uint32)(luma_den * av_q2d(display_meta->max_luminance));
-            hdrmeta->minMasteringLuminance =
-                FFMIN((amf_uint32)(luma_den * av_q2d(display_meta->min_luminance)), hdrmeta->maxMasteringLuminance);
-        }
-        if (display_meta->has_primaries) {
-            const unsigned int chroma_den = 50000;
-            hdrmeta->redPrimary[0] =
-                FFMIN((amf_uint16)(chroma_den * av_q2d(display_meta->display_primaries[0][0])), chroma_den);
-            hdrmeta->redPrimary[1] =
-                FFMIN((amf_uint16)(chroma_den * av_q2d(display_meta->display_primaries[0][1])), chroma_den);
-            hdrmeta->greenPrimary[0] =
-                FFMIN((amf_uint16)(chroma_den * av_q2d(display_meta->display_primaries[1][0])), chroma_den);
-            hdrmeta->greenPrimary[1] =
-                FFMIN((amf_uint16)(chroma_den * av_q2d(display_meta->display_primaries[1][1])), chroma_den);
-            hdrmeta->bluePrimary[0] =
-                FFMIN((amf_uint16)(chroma_den * av_q2d(display_meta->display_primaries[2][0])), chroma_den);
-            hdrmeta->bluePrimary[1] =
-                FFMIN((amf_uint16)(chroma_den * av_q2d(display_meta->display_primaries[2][1])), chroma_den);
-            hdrmeta->whitePoint[0] =
-                FFMIN((amf_uint16)(chroma_den * av_q2d(display_meta->white_point[0])), chroma_den);
-            hdrmeta->whitePoint[1] =
-                FFMIN((amf_uint16)(chroma_den * av_q2d(display_meta->white_point[1])), chroma_den);
-        }
-
-        sd_light = av_frame_get_side_data(frame, AV_FRAME_DATA_CONTENT_LIGHT_LEVEL);
-        if (sd_light) {
-            light_meta = (AVContentLightMetadata *)sd_light->data;
-            if (light_meta) {
-                hdrmeta->maxContentLightLevel = (amf_uint16)light_meta->MaxCLL;
-                hdrmeta->maxFrameAverageLightLevel = (amf_uint16)light_meta->MaxFALL;
-            }
-        }
-        return 0;
-    }
-    return 1;
-}
 
 #if CONFIG_D3D11VA
 #include <d3d11.h>
@@ -220,6 +168,77 @@ int av_cold ff_amf_encode_close(AVCodecContext *avctx)
     return 0;
 }
 
+int ff_amf_get_lookahead_depth_max(AVCodecContext *avctx, AMFComponent *encoder, amf_uint64 runtime_version, amf_int64 *out_max)
+{
+    if (!encoder || !out_max)
+        return AVERROR(EINVAL);
+
+    *out_max = MAX_LOOKAHEAD_DEPTH;
+#if AMF_VERSION_ATLEAST(1, 5, 3)
+    const AMFPropertyInfo *prop_info = NULL;
+    AMF_RESULT res;
+
+    if (runtime_version >= AMF_MAKE_FULL_VERSION(1, 5, 3, 0)) {
+        res = encoder->pVtbl->GetPropertyInfo(encoder, AMF_PA_LOOKAHEAD_BUFFER_DEPTH, &prop_info);
+        if (res == AMF_OK && prop_info && prop_info->type == AMF_VARIANT_INT64) {
+            *out_max = prop_info->maxValue.int64Value;
+        } else {
+            av_log(avctx, AV_LOG_DEBUG, "Failed to query maximum lookahead depth, using %d\n", MAX_LOOKAHEAD_DEPTH);
+        }
+    }
+#endif
+    return 0;
+}
+
+void ff_amf_clamp_lookahead_depth(AVCodecContext *avctx, AMFEncoderContext *ctx)
+{
+    AVHWDeviceContext *device_ctx = (AVHWDeviceContext *)ctx->device_ctx_ref->data;
+    AVAMFDeviceContext *amf_ctx = device_ctx->hwctx;
+    amf_int64 hw_max;
+    AMF_RESULT res;
+
+    if (ff_amf_get_lookahead_depth_max(avctx, ctx->encoder, amf_ctx->version, &hw_max) == 0 &&
+        ctx->pa_lookahead_buffer_depth > hw_max) {
+        av_log(avctx, AV_LOG_WARNING,
+            "pa_lookahead_buffer_depth %d exceeds supported maximum %lld, clamping\n",
+            ctx->pa_lookahead_buffer_depth, (long long)hw_max);
+        ctx->pa_lookahead_buffer_depth = (int)hw_max;
+    }
+
+    AMF_ASSIGN_PROPERTY_INT64(res, ctx->encoder, AMF_PA_LOOKAHEAD_BUFFER_DEPTH, ctx->pa_lookahead_buffer_depth);
+    if (res != AMF_OK)
+        av_log(avctx, AV_LOG_WARNING, "Setting lookahead buffer depth failed with error %d\n", res);
+}
+
+void ff_amf_fit_async_depth(AVCodecContext *avctx, AMFEncoderContext *ctx)
+{
+    AVHWDeviceContext *device_ctx = (AVHWDeviceContext *)ctx->device_ctx_ref->data;
+    AVAMFDeviceContext *amf_ctx = device_ctx->hwctx;
+    // Size async_depth to the lookahead window in two independent steps:
+    //   - bump: widen async_depth to fit the lookahead depth read back from the
+    //     encoder (the applied value; only present when preanalysis is enabled).
+    //   - cap: limit async_depth to the reported maximum + 1 when it can be queried.
+    amf_int64 hw_max;
+    AMFVariantStruct var = { 0 };
+    AMF_RESULT res;
+
+    res = ctx->encoder->pVtbl->GetProperty(ctx->encoder, AMF_PA_LOOKAHEAD_BUFFER_DEPTH, &var);
+    if (res == AMF_OK && var.int64Value >= ctx->hwsurfaces_in_queue_max) {
+        av_log(avctx, AV_LOG_WARNING,
+            "async_depth (%d) too small for lookahead (%lld), increasing to (%lld)\n",
+            ctx->hwsurfaces_in_queue_max, (long long)var.int64Value, (long long)(var.int64Value + 1));
+        ctx->hwsurfaces_in_queue_max = (int)(var.int64Value + 1);
+    }
+
+    if (ff_amf_get_lookahead_depth_max(avctx, ctx->encoder, amf_ctx->version, &hw_max) == 0 &&
+        ctx->hwsurfaces_in_queue_max > hw_max + 1) {
+        av_log(avctx, AV_LOG_WARNING,
+            "async_depth %d exceeds supported range, clamping to %lld\n",
+            ctx->hwsurfaces_in_queue_max, (long long)(hw_max + 1));
+        ctx->hwsurfaces_in_queue_max = (int)(hw_max + 1);
+    }
+}
+
 static int amf_copy_surface(AVCodecContext *avctx, const AVFrame *frame,
     AMFSurface* surface)
 {
@@ -251,6 +270,8 @@ static int amf_copy_buffer(AVCodecContext *avctx, AVPacket *pkt, AMFBuffer *buff
     AMFVariantStruct var = {0};
     int64_t          timestamp = AV_NOPTS_VALUE;
     int64_t          size = buffer->pVtbl->GetSize(buffer);
+    enum AVPictureType pict_type = 0;
+    int              average_qp = -1;
 
     if ((ret = ff_get_encode_buffer(avctx, pkt, size, 0)) < 0) {
         return ret;
@@ -258,25 +279,52 @@ static int amf_copy_buffer(AVCodecContext *avctx, AVPacket *pkt, AMFBuffer *buff
     memcpy(pkt->data, buffer->pVtbl->GetNative(buffer), size);
 
     switch (avctx->codec->id) {
-        case AV_CODEC_ID_H264:
-            buffer->pVtbl->GetProperty(buffer, AMF_VIDEO_ENCODER_OUTPUT_DATA_TYPE, &var);
-            if(var.int64Value == AMF_VIDEO_ENCODER_OUTPUT_DATA_TYPE_IDR) {
-                pkt->flags = AV_PKT_FLAG_KEY;
+    case AV_CODEC_ID_H264:
+        buffer->pVtbl->GetProperty(buffer, AMF_VIDEO_ENCODER_OUTPUT_DATA_TYPE, &var);
+        pkt->flags |= AV_PKT_FLAG_KEY * (var.int64Value == AMF_VIDEO_ENCODER_OUTPUT_DATA_TYPE_IDR);
+        pict_type = var.int64Value == AMF_VIDEO_ENCODER_OUTPUT_DATA_TYPE_IDR ? AV_PICTURE_TYPE_I :
+                    var.int64Value == AMF_VIDEO_ENCODER_OUTPUT_DATA_TYPE_I ? AV_PICTURE_TYPE_I :
+                    var.int64Value == AMF_VIDEO_ENCODER_OUTPUT_DATA_TYPE_P ? AV_PICTURE_TYPE_P :
+                    var.int64Value == AMF_VIDEO_ENCODER_OUTPUT_DATA_TYPE_B ? AV_PICTURE_TYPE_B : 0;
+
+        var.int64Value = -1;
+        if ((buffer->pVtbl->GetProperty(buffer, AMF_VIDEO_ENCODER_STATISTIC_AVERAGE_QP, &var)) == AMF_OK) {
+            average_qp = FFMAX((int)var.int64Value, -1);
+        }
+        break;
+    case AV_CODEC_ID_HEVC:
+        buffer->pVtbl->GetProperty(buffer, AMF_VIDEO_ENCODER_HEVC_OUTPUT_DATA_TYPE, &var);
+        pkt->flags |= AV_PKT_FLAG_KEY * (var.int64Value == AMF_VIDEO_ENCODER_HEVC_OUTPUT_DATA_TYPE_IDR);
+        pict_type = var.int64Value == AMF_VIDEO_ENCODER_HEVC_OUTPUT_DATA_TYPE_IDR ? AV_PICTURE_TYPE_I :
+                    var.int64Value == AMF_VIDEO_ENCODER_HEVC_OUTPUT_DATA_TYPE_I ? AV_PICTURE_TYPE_I :
+                    var.int64Value == AMF_VIDEO_ENCODER_HEVC_OUTPUT_DATA_TYPE_P ? AV_PICTURE_TYPE_P : 0;
+
+        var.int64Value = -1;
+        if ((buffer->pVtbl->GetProperty(buffer, AMF_VIDEO_ENCODER_HEVC_STATISTIC_AVERAGE_QP, &var)) == AMF_OK) {
+            average_qp = FFMAX((int)var.int64Value, -1);
+        }
+        break;
+    case AV_CODEC_ID_AV1:
+        buffer->pVtbl->GetProperty(buffer, AMF_VIDEO_ENCODER_AV1_OUTPUT_FRAME_TYPE, &var);
+        pkt->flags |= AV_PKT_FLAG_KEY * (var.int64Value == AMF_VIDEO_ENCODER_AV1_OUTPUT_FRAME_TYPE_KEY);
+        pict_type = var.int64Value == AMF_VIDEO_ENCODER_AV1_OUTPUT_FRAME_TYPE_KEY ? AV_PICTURE_TYPE_I :
+                    var.int64Value == AMF_VIDEO_ENCODER_AV1_OUTPUT_FRAME_TYPE_INTRA_ONLY ? AV_PICTURE_TYPE_I :
+                    var.int64Value == AMF_VIDEO_ENCODER_AV1_OUTPUT_FRAME_TYPE_INTER ? AV_PICTURE_TYPE_P : 0;
+
+        var.int64Value = -1;
+        if ((buffer->pVtbl->GetProperty(buffer, AMF_VIDEO_ENCODER_AV1_STATISTIC_AVERAGE_Q_INDEX, &var)) == AMF_OK) {
+            average_qp = FFMAX((int)var.int64Value, -1); // av1 qindex
+            if (average_qp >= 0) {
+                average_qp = (average_qp > 244) ? (average_qp <= 249 ? 62 : 63) : (average_qp + 3) >> 2; // av1 quantizer
             }
-            break;
-        case AV_CODEC_ID_HEVC:
-            buffer->pVtbl->GetProperty(buffer, AMF_VIDEO_ENCODER_HEVC_OUTPUT_DATA_TYPE, &var);
-            if (var.int64Value == AMF_VIDEO_ENCODER_HEVC_OUTPUT_DATA_TYPE_IDR) {
-                pkt->flags = AV_PKT_FLAG_KEY;
-            }
-            break;
-        case AV_CODEC_ID_AV1:
-            buffer->pVtbl->GetProperty(buffer, AMF_VIDEO_ENCODER_AV1_OUTPUT_FRAME_TYPE, &var);
-            if (var.int64Value == AMF_VIDEO_ENCODER_AV1_OUTPUT_FRAME_TYPE_KEY) {
-                pkt->flags = AV_PKT_FLAG_KEY;
-            }
-        default:
-            break;
+        }
+        break;
+    default:
+        break;
+    }
+
+    if (ctx->qp_stats && average_qp >= 0) {
+        ff_encode_add_stats_side_data(pkt, average_qp * FF_QP2LAMBDA, NULL, 0, pict_type);
     }
 
     buffer->pVtbl->GetProperty(buffer, ctx->pts_property_name, &var);
@@ -349,15 +397,6 @@ int ff_amf_encode_init(AVCodecContext *avctx)
     else {
         ret = av_hwdevice_ctx_create(&ctx->device_ctx_ref, AV_HWDEVICE_TYPE_AMF, NULL, NULL, 0);
         AMF_RETURN_IF_FALSE(ctx, ret == 0, ret, "Failed to create  hardware device context (AMF) : %s\n", av_err2str(ret));
-    }
-
-    if (ctx->pa_lookahead_buffer_depth >= ctx->hwsurfaces_in_queue_max) {
-        av_log(avctx, AV_LOG_WARNING,
-               "async_depth (%d) too small for lookahead (%d), increasing to (%d)\n",
-                ctx->hwsurfaces_in_queue_max,
-                ctx->pa_lookahead_buffer_depth,
-                ctx->pa_lookahead_buffer_depth + 1);
-        ctx->hwsurfaces_in_queue_max = ctx->pa_lookahead_buffer_depth + 1;
     }
 
     if ((ret = amf_init_encoder(avctx)) == 0) {
@@ -479,7 +518,7 @@ static int amf_submit_frame(AVCodecContext *avctx, AVFrame    *frame, AMFSurface
         res = amf_device_ctx->context->pVtbl->AllocBuffer(amf_device_ctx->context, AMF_MEMORY_HOST, sizeof(AMFHDRMetadata), &hdrmeta_buffer);
         if (res == AMF_OK) {
             AMFHDRMetadata * hdrmeta = (AMFHDRMetadata*)hdrmeta_buffer->pVtbl->GetNative(hdrmeta_buffer);
-            if (amf_save_hdr_metadata(avctx, frame, hdrmeta) == 0) {
+            if (av_amf_extract_hdr_metadata(frame, hdrmeta) == 0) {
                 switch (avctx->codec->id) {
                 case AV_CODEC_ID_H264:
                     AMF_ASSIGN_PROPERTY_INTERFACE(res, ctx->encoder, AMF_VIDEO_ENCODER_INPUT_HDR_METADATA, hdrmeta_buffer); break;
@@ -500,6 +539,9 @@ static int amf_submit_frame(AVCodecContext *avctx, AVFrame    *frame, AMFSurface
 
     switch (avctx->codec->id) {
     case AV_CODEC_ID_H264:
+        if (ctx->qp_stats) {
+            AMF_ASSIGN_PROPERTY_BOOL(res, surface, AMF_VIDEO_ENCODER_STATISTICS_FEEDBACK, 1);
+        }
         AMF_ASSIGN_PROPERTY_INT64(res, surface, AMF_VIDEO_ENCODER_INSERT_AUD, !!ctx->aud);
         switch (frame->pict_type) {
         case AV_PICTURE_TYPE_I:
@@ -520,6 +562,9 @@ static int amf_submit_frame(AVCodecContext *avctx, AVFrame    *frame, AMFSurface
         }
         break;
     case AV_CODEC_ID_HEVC:
+        if (ctx->qp_stats) {
+            AMF_ASSIGN_PROPERTY_BOOL(res, surface, AMF_VIDEO_ENCODER_HEVC_STATISTICS_FEEDBACK, 1);
+        }
         AMF_ASSIGN_PROPERTY_INT64(res, surface, AMF_VIDEO_ENCODER_HEVC_INSERT_AUD, !!ctx->aud);
         switch (frame->pict_type) {
         case AV_PICTURE_TYPE_I:
@@ -536,6 +581,9 @@ static int amf_submit_frame(AVCodecContext *avctx, AVFrame    *frame, AMFSurface
         }
         break;
     case AV_CODEC_ID_AV1:
+        if (ctx->qp_stats) {
+            AMF_ASSIGN_PROPERTY_BOOL(res, surface, AMF_VIDEO_ENCODER_AV1_STATISTICS_FEEDBACK, 1);
+        }
         if (frame->pict_type == AV_PICTURE_TYPE_I) {
             if (ctx->forced_idr) {
                 AMF_ASSIGN_PROPERTY_INT64(res, surface, AMF_VIDEO_ENCODER_AV1_FORCE_INSERT_SEQUENCE_HEADER, 1);
@@ -731,41 +779,6 @@ int ff_amf_receive_packet(AVCodecContext *avctx, AVPacket *avpkt)
         ret = 0;
     }
     return ret;
-}
-
-int ff_amf_get_color_profile(AVCodecContext *avctx)
-{
-    amf_int64 color_profile = AMF_VIDEO_CONVERTER_COLOR_PROFILE_UNKNOWN;
-    if (avctx->color_range == AVCOL_RANGE_JPEG) {
-        /// Color Space for Full (JPEG) Range
-        switch (avctx->colorspace) {
-        case AVCOL_SPC_SMPTE170M:
-            color_profile = AMF_VIDEO_CONVERTER_COLOR_PROFILE_FULL_601;
-            break;
-        case AVCOL_SPC_BT709:
-            color_profile = AMF_VIDEO_CONVERTER_COLOR_PROFILE_FULL_709;
-            break;
-        case AVCOL_SPC_BT2020_NCL:
-        case AVCOL_SPC_BT2020_CL:
-            color_profile = AMF_VIDEO_CONVERTER_COLOR_PROFILE_FULL_2020;
-            break;
-        }
-    } else {
-        /// Color Space for Limited (MPEG) range
-        switch (avctx->colorspace) {
-        case AVCOL_SPC_SMPTE170M:
-            color_profile = AMF_VIDEO_CONVERTER_COLOR_PROFILE_601;
-            break;
-        case AVCOL_SPC_BT709:
-            color_profile = AMF_VIDEO_CONVERTER_COLOR_PROFILE_709;
-            break;
-        case AVCOL_SPC_BT2020_NCL:
-        case AVCOL_SPC_BT2020_CL:
-            color_profile = AMF_VIDEO_CONVERTER_COLOR_PROFILE_2020;
-            break;
-        }
-    }
-    return color_profile;
 }
 
 const AVCodecHWConfigInternal *const ff_amfenc_hw_configs[] = {
