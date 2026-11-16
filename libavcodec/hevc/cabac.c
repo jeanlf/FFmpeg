@@ -403,10 +403,23 @@ void ff_hevc_save_states(HEVCLocalContext *lc, const HEVCPPS *pps,
                          int ctb_addr_ts)
 {
     const HEVCSPS *const sps = pps->sps;
-    if (pps->entropy_coding_sync_enabled_flag &&
-        (ctb_addr_ts % sps->ctb_width == 2 ||
-         (sps->ctb_width == 2 &&
-          ctb_addr_ts % sps->ctb_width == 0))) {
+    int save_state;
+
+    if (!pps->entropy_coding_sync_enabled_flag)
+        return;
+
+    if (pps->tiles_enabled_flag) {
+        int ctb_addr_rs = pps->ctb_addr_ts_to_rs[ctb_addr_ts - 1];
+        int col = ctb_addr_rs % sps->ctb_width;
+        int tile_col = pps->tile_id[ctb_addr_ts - 1] % pps->num_tile_columns;
+        save_state = col - pps->col_bd[tile_col] == 1;
+    } else {
+        save_state = ctb_addr_ts % sps->ctb_width == 2 ||
+                     (sps->ctb_width == 2 &&
+                      ctb_addr_ts % sps->ctb_width == 0);
+    }
+
+    if (save_state) {
         memcpy(lc->common_cabac_state->state, lc->sub.cabac_state, HEVC_CONTEXTS);
         if (sps->persistent_rice_adaptation_enabled) {
             memcpy(lc->common_cabac_state->stat_coeff, lc->sub.stat_coeff, HEVC_STAT_COEFFS);
@@ -475,6 +488,18 @@ int ff_hevc_cabac_init(HEVCLocalContext *lc, const HEVCPPS *pps,
     const HEVCContext *const s = lc->parent;
     const HEVCSPS   *const sps = pps->sps;
     HEVCSubstream *const sub = &lc->sub;
+    int col = ctb_addr_ts % sps->ctb_width;
+    int first_col = 0;
+    int tile_width = sps->ctb_width;
+    int tile_start = pps->tiles_enabled_flag && ctb_addr_ts &&
+                     pps->tile_id[ctb_addr_ts] != pps->tile_id[ctb_addr_ts - 1];
+
+    if (pps->tiles_enabled_flag && pps->entropy_coding_sync_enabled_flag) {
+        int tile_col = pps->tile_id[ctb_addr_ts] % pps->num_tile_columns;
+        col = pps->ctb_addr_ts_to_rs[ctb_addr_ts] % sps->ctb_width;
+        first_col = pps->col_bd[tile_col];
+        tile_width = pps->column_width[tile_col];
+    }
 
     if (ctb_addr_ts == pps->ctb_addr_rs_to_ts[lc->sh->slice_ctb_addr_rs]) {
         /* First CTB of a slice segment. For a dependent slice segment the
@@ -484,29 +509,26 @@ int ff_hevc_cabac_init(HEVCLocalContext *lc, const HEVCPPS *pps,
             return ret;
         sub->opened = 1;
         if (lc->sh->dependent_slice_segment_flag == 0 ||
-            (pps->tiles_enabled_flag &&
-             pps->tile_id[ctb_addr_ts] != pps->tile_id[ctb_addr_ts - 1]))
+            tile_start)
             cabac_init_state(lc, s);
 
         if (!lc->sh->first_slice_in_pic_flag &&
             pps->entropy_coding_sync_enabled_flag) {
-            if (ctb_addr_ts % sps->ctb_width == 0) {
-                if (sps->ctb_width == 1)
+            if (col == first_col && !tile_start) {
+                if (tile_width == 1)
                     cabac_init_state(lc, s);
                 else if (lc->sh->dependent_slice_segment_flag == 1)
                     load_states(lc, sps);
             }
         }
     } else {
-        if (pps->tiles_enabled_flag &&
-            pps->tile_id[ctb_addr_ts] != pps->tile_id[ctb_addr_ts - 1]) {
+        if (tile_start) {
             int ret = substream_continue(lc);
             if (ret < 0)
                 return ret;
             cabac_init_state(lc, s);
-        }
-        if (pps->entropy_coding_sync_enabled_flag) {
-            if (ctb_addr_ts % sps->ctb_width == 0) {
+        } else if (pps->entropy_coding_sync_enabled_flag) {
+            if (col == first_col) {
                 int ret;
                 /* The end of row terminate bit is read only when continuing */
                 if (sub->opened)
@@ -515,7 +537,7 @@ int ff_hevc_cabac_init(HEVCLocalContext *lc, const HEVCPPS *pps,
                 if (ret < 0)
                     return ret;
 
-                if (sps->ctb_width == 1)
+                if (tile_width == 1)
                     cabac_init_state(lc, s);
                 else
                     load_states(lc, sps);

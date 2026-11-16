@@ -2736,17 +2736,19 @@ static void hls_decode_neighbour(HEVCLocalContext *lc,
     if (!lc->tile_bs_defer)
         l->tab_slice_address[ctb_addr_rs] = lc->sh->slice_addr;
 
-    if (pps->entropy_coding_sync_enabled_flag) {
-        if (x_ctb == 0 && (y_ctb & (ctb_size - 1)) == 0)
+    if (pps->tiles_enabled_flag) {
+        int idxX = pps->tile_id[ctb_addr_ts] % pps->num_tile_columns;
+        lc->end_of_tiles_x = pps->col_bd[idxX + 1] << sps->log2_ctb_size;
+        if (pps->entropy_coding_sync_enabled_flag &&
+            x_ctb == pps->col_bd[idxX] << sps->log2_ctb_size)
             lc->sub.first_qp_group = 1;
-        lc->end_of_tiles_x = sps->width;
-    } else if (pps->tiles_enabled_flag) {
         if (ctb_addr_ts && pps->tile_id[ctb_addr_ts] != pps->tile_id[ctb_addr_ts - 1]) {
-            int idxX = pps->col_idxX[x_ctb >> sps->log2_ctb_size];
-            lc->end_of_tiles_x   = x_ctb + (pps->column_width[idxX] << sps->log2_ctb_size);
             lc->sub.first_qp_group   = 1;
         }
     } else {
+        if (pps->entropy_coding_sync_enabled_flag &&
+            x_ctb == 0 && (y_ctb & (ctb_size - 1)) == 0)
+            lc->sub.first_qp_group = 1;
         lc->end_of_tiles_x = sps->width;
     }
 
