@@ -2121,6 +2121,7 @@ static int configure_video_filters(AVFilterGraph *graph, VideoState *is, const c
     par->color_space         = frame->colorspace;
     par->color_range         = frame->color_range;
     par->alpha_mode          = frame->alpha_mode;
+    par->chroma_location     = frame->chroma_location;
     par->frame_rate          = fr;
     par->hw_frames_ctx = frame->hw_frames_ctx;
     ret = av_buffersrc_parameters_set(filt_src, par);
